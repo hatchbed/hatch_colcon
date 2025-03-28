@@ -9,6 +9,7 @@ setup(
         'argparse',
         'PyYAML',
         'lxml',
+        'colcon-common-extensions',
     ],
     entry_points={
         "console_scripts": [
