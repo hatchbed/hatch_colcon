@@ -6,6 +6,7 @@ import os
 import pkg_resources
 import subprocess
 import sys
+import time
 import xml.etree.ElementTree as ET
 import yaml
 
@@ -156,6 +157,9 @@ def print_workspace_state(workspace):
             test_result_space = config.get("test_result_space", "test_results")
             if test_result_space is None or len(test_result_space.strip()) == 0:
                 test_result_space = "test_results"
+            nice = config.get("nice", 0)
+            if nice is None:
+                nice = 0
 
     build_dir = os.path.join(workspace, build_space)
     install_dir = os.path.join(workspace, install_space)
@@ -183,6 +187,7 @@ def print_workspace_state(workspace):
     print("-" * 70)
 
     # Print additional args
+    print(f"CPU Niceness                 {nice}")
     if not colcon_build_args:
         print(f"Colcon Build Args:           None")
     else:
@@ -239,6 +244,7 @@ def init_command(args):
     config_content = {
         "build_space": "build",
         "colcon_build_args": [],
+        "nice": 0,
         "extend_path": "",
         "install_space": "install",
         "test_result_space": "test_results"
@@ -288,6 +294,7 @@ def config_command(args):
     config_content = {
         "build_space": "build",
         "colcon_build_args": [],
+        "nice": 0,
         "extend_path": "",
         "install_space": "install",
         "test_result_space": "test_results"
@@ -340,6 +347,9 @@ def config_command(args):
     if args.no_colcon_build_args:
         config_content['colcon_build_args'] = []
 
+    if args.nice:
+        config_content['nice'] = args.nice
+
     with open(config_file, "w") as f:
         yaml.dump(config_content, f, default_flow_style=False)
 
@@ -381,6 +391,7 @@ def build_command(args):
     config_content = {
         "build_space": "build",
         "colcon_build_args": [],
+        "nice": 0,
         "extend_path": "",
         "install_space": "install",
         "test_result_space": "test_results"
@@ -413,6 +424,16 @@ def build_command(args):
     colcon_build_args = config_content.get("colcon_build_args", [])
     if colcon_build_args is None:
         colcon_build_args = []
+    if args.colcon_build_args:
+        colcon_build_args = args.colcon_build_args
+
+    # Nice level
+    nice = config_content.get("nice", 0)
+    if nice is None:
+        nice = 0
+    if args.nice is not None:
+        nice = args.nice
+
     colcon_cmd += colcon_build_args
 
     # Packages
@@ -440,8 +461,25 @@ def build_command(args):
         colcon_shell_cmd = f'source {extend_script} && ' + colcon_shell_cmd
 
     print(f"Running: {colcon_shell_cmd}")
-    result = subprocess.run(colcon_shell_cmd, cwd=workspace, shell=True, executable="/bin/bash", 
-                            stdout=sys.stdout, stderr=sys.stderr)
+
+    process = subprocess.Popen(
+        colcon_shell_cmd,
+        cwd=workspace,
+        shell=True,
+        executable="/bin/bash",
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+        env={}
+    )
+
+    while process.poll() is None:
+        subprocess.run(
+            f"renice -n {nice} -p $(pgrep -g $(ps -o pgid= -p {process.pid}))",
+            shell=True,
+            executable="/bin/bash",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        time.sleep(1)
 
 
 def clean_command(args):
@@ -510,6 +548,7 @@ def main():
     build_config_group = builder_parser.add_argument_group('Config', "Parameters for the underlying build system.")
     build_config_group.add_argument("--colcon-build-args", metavar='ARG', dest='colcon_build_args', 
                                     nargs="+", required=False, type=str, default=None, help="Additional arguments for colcon")
+    build_config_group.add_argument("--nice", "-n", type=int, help="CPU niceness for build commands. (default: 0)")
     builder_parser.set_defaults(func=build_command)
 
     clean_parser = subparsers.add_parser("clean", help="Deletes various products of the build verb.")
@@ -561,6 +600,7 @@ def main():
     config_build_group.add_argument("--no-colcon-build-args", action="store_true", help="Pass no additional arguments to colcon")
     config_build_group.add_argument("--colcon-build-args", metavar='ARG', dest='colcon_build_args', 
                                     nargs="+", required=False, type=str, default=None, help="Additional arguments for colcon")
+    config_build_group.add_argument("--nice", "-n", type=int, help="CPU niceness for build commands. (default: 0)")
     config_parser.set_defaults(func=config_command)
 
     ## Init
