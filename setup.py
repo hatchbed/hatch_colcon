@@ -4,7 +4,12 @@ setup(
     name="hatch_colcon", 
     version="0.1.0",
     py_modules=["hatch"],
-    install_requires=[],
+    install_requires=[
+        'setuptools',
+        'argparse',
+        'PyYAML',
+        'lxml',
+    ],
     entry_points={
         "console_scripts": [
             "hatch=hatch:main",
