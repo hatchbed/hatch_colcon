@@ -2,10 +2,13 @@
 
 import argparse
 from datetime import date
+import importlib.metadata
 import os
-import pkg_resources
+from pathlib import Path
+import shutil
 import subprocess
 import sys
+import textwrap
 import time
 import xml.etree.ElementTree as ET
 import yaml
@@ -13,6 +16,20 @@ import yaml
 def remove_duplicates(lst):
     seen = set()
     return [x for x in lst if not (x in seen or seen.add(x))]
+
+
+def delete_matching_dirs(root_dir, names_to_delete):
+    root_path = Path(root_dir)
+    for subdir in root_path.rglob('*'):
+        if subdir.is_dir() and subdir.name in names_to_delete:
+            shutil.rmtree(subdir)
+
+
+def get_dependent_packages(packages):
+    cmd = ["colcon", "list", "-n", "--packages-above"] + packages
+    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    pkgs = [pkg for pkg in result.stdout.splitlines() if "not found" not in pkg.lower()]
+    return pkgs
 
 
 def split_arguments(args, splitter_index):
@@ -483,7 +500,119 @@ def build_command(args):
 
 
 def clean_command(args):
-    pass
+    # Find the workspace directory
+    workspace = os.path.abspath(args.workspace)
+    
+    # Verify workspace exists
+    if not os.path.exists(workspace):
+        print(f"Error: The specified workspace directory '{workspace}' does not exist.")
+        sys.exit(1)
+
+    workspace = get_workspace_dir(workspace)
+    if workspace is None:
+        print(f"Error: Parent colcon workspace directory does not exist.")
+        sys.exit(1)
+
+    profile = args.profile
+    if profile is None:
+        profile = get_active_profile(workspace)
+        if profile is None:
+            print(f"Workspace '{workspace}' has not been initialized with an active profile.")
+            return
+
+    # Define profile directory
+    hatch_dir = os.path.join(workspace, ".hatch")
+    profiles_dir = os.path.join(hatch_dir, "profiles")
+    profile_dir = os.path.join(profiles_dir, profile)
+    config_file = os.path.join(profile_dir, "config.yaml")
+
+    if not os.path.exists(config_file):
+        print(f"Error: Profile '{profile}' does not exist.")
+        sys.exit(1)
+
+    config_content = {
+        "build_space": "build",
+        "install_space": "install",
+        "test_result_space": "test_results"
+    }
+    if os.path.exists(config_file):
+        with open(config_file, "r") as f:
+            config_content.update(yaml.safe_load(f))
+
+    # Build space
+    build_space = config_content.get("build_space", "build")
+    if not build_space:
+        build_space = "build"
+
+    # Install space
+    install_space = config_content.get("install_space", "install")
+    if not install_space:
+        install_space = "install"
+
+    # Test results space
+    test_result_space = config_content.get("test_result_space", "test_results")
+    if not test_result_space:
+        test_result_space = "test_results"
+
+    # Clean targets
+    targets = []
+    if args.build_space:
+        targets.append(build_space)
+    if args.install_space:
+        targets.append(install_space)
+    if args.test_result_space:
+        targets.append(test_result_space)
+    if args.log_space:
+        targets.append("log")
+    if len(targets) == 0:
+        targets = [build_space, install_space, test_result_space, "log"]
+
+    target_paths = []
+    for target in targets:
+        target_path = os.path.join(workspace, target)
+        if os.path.isdir(target_path):
+            target_paths.append(target_path)
+
+    if len(target_paths) == 0:
+        print("Nothing to clean.")
+        return
+
+    # Clean packages
+    packages = args.pkgs
+    if args.this:
+        current_package = get_package(args.workspace)
+        if current_package:
+            packages.append(current_package)
+
+    if len(packages) > 0 and args.dependents:
+        packages = get_dependent_packages(packages)
+
+    if len(packages) > 0:  
+        print("Cleaning the following packages:")
+        pkgs_str = textwrap.fill(' '.join(packages), width=70)
+        pkgs_str = "\n".join(['    ' + line for line in pkgs_str.splitlines()])
+        print(f"{pkgs_str}")
+        print("  from:")
+        targets_str = "\n".join(['    ' + target for target in target_paths])
+        print(f"{targets_str}")
+    else:
+        print("Cleaning:")
+        targets_str = "\n".join(['    ' + target for target in target_paths])
+        print(f"{targets_str}")
+
+    if not args.yes:
+        response = input("Are you sure you want to continue? (y/N): ").strip().lower()
+        if response not in ("y", "yes"):
+            print("Aborting.")
+            exit(1)
+
+    if len(packages) > 0:
+        for target_path in target_paths:
+            delete_matching_dirs(target_path, packages)
+    else:
+        for target_path in target_paths:
+            shutil.rmtree(target_path)
+
 
 def test_command(args):
     pass
@@ -671,7 +800,7 @@ def main():
         if arg in ['-h', '--help', '--version']:
             args = parser.parse_args(sysargs)
             if args.version:
-                version = pkg_resources.get_distribution('hatch_colcon').version
+                version = importlib.metadata.version('hatch_colcon')
                 year = date.today().year
                 if year > 2025:
                     year = f'2025-{year}'
