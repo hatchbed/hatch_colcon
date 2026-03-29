@@ -22,9 +22,12 @@ _RED = "\033[31m"
 _BOLD_RED = "\033[1;31m"
 
 
+_color = True
+
+
 def clr(text, code):
-    """Wrap text in an ANSI color code if stdout is a TTY."""
-    if sys.stdout.isatty():
+    """Wrap text in an ANSI color code if stdout is a TTY and color is enabled."""
+    if _color and sys.stdout.isatty():
         return f"{code}{text}{_RESET}"
     return text
 
@@ -889,6 +892,10 @@ def print_test_results(workspace, build_space, verbose=False, packages=None):
 
 
 def test_command(args):
+    if args.no_color:
+        global _color
+        _color = False
+
     # Find the workspace directory
     workspace = os.path.abspath(args.workspace)
 
@@ -1191,6 +1198,8 @@ def main():
                                    help="Show the status of every individual test case.")
     test_config_group.add_argument("--results-only", "-r", action="store_true",
                                    help="Show results from the last test run without re-running tests.")
+    test_config_group.add_argument("--no-color", action="store_true",
+                                   help="Disable colored output.")
 
     test_parser.set_defaults(func=test_command)
 
