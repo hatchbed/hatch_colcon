@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import shlex
 from datetime import date
 import importlib.metadata
 import os
@@ -614,8 +615,373 @@ def clean_command(args):
             shutil.rmtree(target_path)
 
 
+def get_xunit_path_from_cmdline(cmdline):
+    """Extract the xunit result file path from a run_test.py FullCommandLine."""
+    try:
+        tokens = shlex.split(cmdline)
+        for i, token in enumerate(tokens):
+            if 'run_test.py' in token and i + 1 < len(tokens):
+                return tokens[i + 1]
+    except Exception:
+        pass
+    return None
+
+
+def parse_xunit_results(xunit_path):
+    """Parse a JUnit/xunit/GTest XML file.
+
+    Returns (total, passed, skipped, failures, errors, failed_names, all_cases) or None on error.
+    all_cases is a list of (name, status) where status is 'passed', 'failed', 'skipped', or 'error'.
+    """
+    try:
+        tree = ET.parse(xunit_path)
+        root = tree.getroot()
+        total = failures = errors = skipped = 0
+        failed_names = []
+        all_cases = []
+
+        suites = root.findall('testsuite') if root.tag == 'testsuites' else [root]
+        for suite in suites:
+            total += int(suite.get('tests', 0))
+            failures += int(suite.get('failures', 0))
+            errors += int(suite.get('errors', 0))
+            skipped += int(suite.get('skipped', suite.get('disabled', 0)))
+            for tc in suite.findall('testcase'):
+                tc_name = tc.get('name', 'unknown')
+                detail = None
+                fail_el = tc.find('failure')
+                err_el = tc.find('error')
+                if fail_el is not None:
+                    status = 'failed'
+                    failed_names.append(tc_name)
+                    detail = fail_el.get('message') or (fail_el.text or '').strip()
+                elif err_el is not None:
+                    status = 'error'
+                    failed_names.append(tc_name)
+                    detail = err_el.get('message') or (err_el.text or '').strip()
+                elif tc.find('skipped') is not None or tc.get('status') == 'notrun':
+                    status = 'skipped'
+                else:
+                    status = 'passed'
+                all_cases.append((tc_name, status, detail))
+
+        passed = total - failures - errors - skipped
+        return total, passed, skipped, failures, errors, failed_names, all_cases
+    except Exception:
+        return None
+
+
+def get_latest_ctest_xml(pkg_build_dir):
+    """Return the path to the most recent Test.xml for a package, or None."""
+    testing_dir = os.path.join(pkg_build_dir, 'Testing')
+    if not os.path.isdir(testing_dir):
+        return None
+    timestamps = sorted([
+        d for d in os.listdir(testing_dir)
+        if os.path.isdir(os.path.join(testing_dir, d)) and d != 'Temporary'
+    ])
+    if not timestamps:
+        return None
+    xml_path = os.path.join(testing_dir, timestamps[-1], 'Test.xml')
+    return xml_path if os.path.isfile(xml_path) else None
+
+
+def print_test_results(workspace, build_space, verbose=False, packages=None):
+    """Parse CTest XML files and print a nested test result summary.
+
+    Returns 0 if all tests passed, 1 if any failed.
+    If packages is provided, only results for those packages are shown.
+    """
+    build_dir = os.path.join(workspace, build_space)
+    if not os.path.isdir(build_dir):
+        print("No build directory found, no test results to show.")
+        return 1
+
+    all_pkgs = sorted([
+        d for d in os.listdir(build_dir)
+        if os.path.isdir(os.path.join(build_dir, d, 'Testing'))
+    ])
+
+    if packages:
+        all_pkgs = [p for p in all_pkgs if p in packages]
+
+    if not all_pkgs:
+        print("No test results found.")
+        return 0
+
+    packages = all_pkgs
+
+    total_suites = total_suites_passed = 0
+    total_tests = total_passed = total_skipped = total_failed = 0
+    any_failure = False
+
+    print()
+    print("-" * 70)
+
+    for pkg in packages:
+        ctest_xml = get_latest_ctest_xml(os.path.join(build_dir, pkg))
+        if ctest_xml is None:
+            continue
+        try:
+            root = ET.parse(ctest_xml).getroot()
+        except Exception:
+            continue
+
+        test_entries = root.findall('.//Testing/Test')
+        if not test_entries:
+            continue
+
+        suite_data = []
+        pkg_tests = pkg_passed = pkg_skipped = pkg_failed_tests = pkg_suites_passed = 0
+        pkg_failed = False
+
+        for entry in test_entries:
+            name = entry.findtext('Name', '')
+            suite_ok = entry.get('Status') == 'passed'
+
+            exec_time = None
+            for nm in entry.findall('.//NamedMeasurement'):
+                if nm.get('name') == 'Execution Time':
+                    try:
+                        exec_time = float(nm.findtext('Value', '0'))
+                    except ValueError:
+                        pass
+
+            labels = [lbl.text for lbl in entry.findall('.//Label') if lbl.text]
+            label = labels[0] if labels else ''
+
+            xunit_path = get_xunit_path_from_cmdline(entry.findtext('FullCommandLine', ''))
+            xunit = None
+            if xunit_path and os.path.isfile(xunit_path):
+                xunit = parse_xunit_results(xunit_path)
+
+            if xunit:
+                n_total, n_passed, n_skipped, n_failures, n_errors, _, _ = xunit
+                pkg_tests += n_total
+                pkg_passed += n_passed
+                pkg_skipped += n_skipped
+                pkg_failed_tests += n_failures + n_errors
+                if n_failures or n_errors:
+                    suite_ok = False
+
+            if suite_ok:
+                pkg_suites_passed += 1
+            else:
+                pkg_failed = True
+
+            suite_data.append((name, label, exec_time, xunit, suite_ok))
+
+        if pkg_failed:
+            any_failure = True
+        n_suites = len(test_entries)
+        total_suites += n_suites
+        total_suites_passed += pkg_suites_passed
+        total_tests += pkg_tests
+        total_passed += pkg_passed
+        total_skipped += pkg_skipped
+        total_failed += pkg_failed_tests
+
+        # Package header line
+        header_status = "FAILED" if pkg_failed else "passed"
+        if pkg_tests > 0:
+            parts = [f"{pkg_passed} passed"]
+            if pkg_skipped:
+                parts.append(f"{pkg_skipped} skipped")
+            if pkg_failed_tests:
+                parts.append(f"{pkg_failed_tests} failed")
+            print(f"{pkg}: {pkg_suites_passed}/{n_suites} suites {header_status}"
+                  f"  ({', '.join(parts)})")
+        else:
+            print(f"{pkg}: {pkg_suites_passed}/{n_suites} suites {header_status}")
+
+        # Per-suite lines
+        name_w = max(len(s[0]) for s in suite_data)
+        for name, label, exec_time, xunit, suite_ok in suite_data:
+            tag = "[ ok ]" if suite_ok else "[FAIL]"
+            label_str = f" [{label}]" if label else ""
+            time_str = f"  ({exec_time:.2f}s)" if exec_time is not None else ""
+
+            if xunit:
+                n_total, n_passed, n_skipped, n_failures, n_errors, failed_names, all_cases = xunit
+                counts = []
+                if n_passed:
+                    counts.append(f"{n_passed} passed")
+                if n_skipped:
+                    counts.append(f"{n_skipped} skipped")
+                if n_failures:
+                    counts.append(f"{n_failures} failed")
+                if n_errors:
+                    counts.append(f"{n_errors} errors")
+                counts_str = ", ".join(counts) if counts else "0 tests"
+                print(f"  {tag} {name:<{name_w}}{label_str}  {counts_str}{time_str}")
+                if verbose:
+                    for tc_name, tc_status, detail in all_cases:
+                        tc_tag = "[ ok ]" if tc_status == 'passed' else \
+                                 "[SKIP]" if tc_status == 'skipped' else "[FAIL]"
+                        print(f"       {tc_tag} {tc_name}")
+                        if detail and tc_status in ('failed', 'error'):
+                            for line in detail.splitlines():
+                                print(f"              {line}")
+                elif failed_names:
+                    for tc_name, tc_status, detail in all_cases:
+                        if tc_status not in ('failed', 'error'):
+                            continue
+                        print(f"         FAILED: {tc_name}")
+                        if detail:
+                            for line in detail.splitlines():
+                                print(f"                {line}")
+            else:
+                print(f"  {tag} {name:<{name_w}}{label_str}  "
+                      f"{'passed' if suite_ok else 'FAILED'}{time_str}")
+
+        print()
+
+    print("-" * 70)
+    suite_str = f"{total_suites_passed}/{total_suites} suites"
+    if total_tests > 0:
+        test_parts = [f"{total_passed} passed"]
+        if total_skipped:
+            test_parts.append(f"{total_skipped} skipped")
+        if total_failed:
+            test_parts.append(f"{total_failed} failed")
+        print(f"Summary: {suite_str} | {', '.join(test_parts)} -- "
+              f"{'FAILED' if any_failure else 'passed'}")
+    else:
+        print(f"Summary: {suite_str} -- {'FAILED' if any_failure else 'passed'}")
+    print("-" * 70)
+
+    return 1 if any_failure else 0
+
+
 def test_command(args):
-    pass
+    # Find the workspace directory
+    workspace = os.path.abspath(args.workspace)
+
+    # Verify workspace exists
+    if not os.path.exists(workspace):
+        print(f"Error: The specified workspace directory '{workspace}' does not exist.")
+        sys.exit(1)
+
+    workspace = get_workspace_dir(workspace)
+    if workspace is None:
+        print(f"Error: Parent colcon workspace directory does not exist.")
+        sys.exit(1)
+
+    profile = args.profile
+    if profile is None:
+        profile = get_active_profile(workspace)
+        if profile is None:
+            print(f"Workspace '{workspace}' has not been initialized with an active profile.")
+            return
+
+    # Define profile directory
+    hatch_dir = os.path.join(workspace, ".hatch")
+    profiles_dir = os.path.join(hatch_dir, "profiles")
+    profile_dir = os.path.join(profiles_dir, profile)
+    config_file = os.path.join(profile_dir, "config.yaml")
+
+    if not os.path.exists(config_file):
+        print(f"Error: Profile '{profile}' does not exist.")
+        sys.exit(1)
+
+    config_content = {
+        "build_space": "build",
+        "colcon_build_args": [],
+        "nice": 0,
+        "extend_path": "",
+        "install_space": "install",
+        "test_result_space": "test_results"
+    }
+    if os.path.exists(config_file):
+        with open(config_file, "r") as f:
+            config_content.update(yaml.safe_load(f))
+
+    # Build space
+    build_space = config_content.get("build_space", "build")
+    if not build_space:
+        build_space = "build"
+
+    if args.results_only:
+        packages = args.pkgs
+        if args.this:
+            current_package = get_package(args.workspace)
+            if current_package:
+                packages.append(current_package)
+        result_code = print_test_results(
+            workspace, build_space, verbose=args.verbose,
+            packages=packages if packages else None)
+        sys.exit(result_code)
+
+    colcon_cmd = ["colcon", "test"]
+    colcon_cmd += ['--build-base', build_space]
+
+    # Test results space
+    test_result_space = config_content.get("test_result_space", "test_results")
+    if not test_result_space:
+        test_result_space = "test_results"
+    colcon_cmd += ['--test-result-base', test_result_space]
+
+    # Only pass explicitly-provided CLI args — the profile's colcon_build_args are
+    # build-specific (e.g. --cmake-args) and not valid for colcon test.
+    if args.colcon_build_args:
+        colcon_cmd += args.colcon_build_args
+
+    # Nice level
+    nice = config_content.get("nice", 0)
+    if nice is None:
+        nice = 0
+
+    # Packages
+    packages = args.pkgs
+    if args.this:
+        current_package = get_package(args.workspace)
+        if current_package:
+            packages.append(current_package)
+
+    if packages:
+        if args.no_deps:
+            colcon_cmd += ['--packages-select'] + packages
+        else:
+            colcon_cmd += ['--packages-up-to'] + packages
+
+    colcon_shell_cmd = ' '.join(colcon_cmd)
+
+    # Extend path
+    extend_path = config_content.get("extend_path", None)
+    extend_script = None
+    if extend_path:
+        extend_script = os.path.join(extend_path, "setup.bash")
+        if not os.path.exists(extend_script):
+            print(f"Error: '{extend_script}' does not exist.")
+            sys.exit(1)
+        colcon_shell_cmd = f'source {extend_script} && ' + colcon_shell_cmd
+
+    print(f"Running: {colcon_shell_cmd}")
+
+    process = subprocess.Popen(
+        colcon_shell_cmd,
+        cwd=workspace,
+        shell=True,
+        executable="/bin/bash",
+        stdout=sys.stdout,
+        stderr=sys.stderr,
+    )
+
+    while process.poll() is None:
+        subprocess.run(
+            f"renice -n {nice} -p $(pgrep -g $(ps -o pgid= -p {process.pid}))",
+            shell=True,
+            executable="/bin/bash",
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL)
+        time.sleep(1)
+
+    test_returncode = process.returncode
+
+    result_code = print_test_results(
+        workspace, build_space, verbose=args.verbose,
+        packages=packages if packages else None)
+    sys.exit(max(test_returncode, result_code))
 
 def list_packages_command(args):
     pass
@@ -777,14 +1143,19 @@ def main():
     test_parser.add_argument("--workspace", "-w", default=".", help="The path to the colcon workspace (default: \".\")")
     test_parser.add_argument("--profile", default="default", help="The name of a config profile to use (default: 'default')")
 
-    test_packages_group = test_parser.add_argument_group('Packages', 'Clean workspace subdirectories for the selected profile.')
-    test_packages_group.add_argument("pkgs", metavar="PKGNAME", nargs='*', type=str, help='Explicilty specify a list of specific packages to test.')
-    test_packages_group.add_argument("--this", action="store_true", help="Clean the package containing the current working directory from the build and install space.")
-    test_packages_group.add_argument("--no-deps", action="store_true", help="Only build specified packages, not their dependencies.")
+    test_packages_group = test_parser.add_argument_group('Packages', 'Select packages to test.')
+    test_packages_group.add_argument("pkgs", metavar="PKGNAME", nargs='*', type=str, help='Explicitly specify a list of specific packages to test.')
+    test_packages_group.add_argument("--this", action="store_true", help="Test the package containing the current working directory.")
+    test_packages_group.add_argument("--no-deps", action="store_true", help="Only test specified packages, not their dependencies.")
 
     test_config_group = test_parser.add_argument_group('Config', "Parameters for the underlying build system.")
-    test_config_group.add_argument("--colcon-build-args", metavar='ARG', dest='colcon_build_args', 
-                                    nargs="+", required=False, type=str, default=None, help="Additional arguments for colcon")
+    test_config_group.add_argument("--colcon-build-args", metavar='ARG', dest='colcon_build_args',
+                                    nargs="+", required=False, type=str, default=None,
+                                    help="Additional arguments for colcon")
+    test_config_group.add_argument("--verbose", "-v", action="store_true",
+                                   help="Show the status of every individual test case.")
+    test_config_group.add_argument("--results-only", "-r", action="store_true",
+                                   help="Show results from the last test run without re-running tests.")
 
     test_parser.set_defaults(func=test_command)
 

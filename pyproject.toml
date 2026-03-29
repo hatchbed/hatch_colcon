@@ -1,3 +1,33 @@
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "hatch_colcon"
+version = "0.1.0"
+description = "Command line tools for working with the colcon meta-buildsystem and colcon workspaces."
+readme = "README.md"
+requires-python = ">=3.6"
+license = "BSD-3-Clause"
+authors = [
+    {name = "Marc Alban", email = "marcalban@hatchbed.com"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "setuptools",
+    "PyYAML",
+    "lxml",
+    "colcon-common-extensions",
+]
+
+[project.urls]
+Homepage = "https://github.com/hatchbed/hatch_colcon"
+
+[project.scripts]
+hatch = "hatch:main"
+
+[tool.setuptools]
+py-modules = ["hatch"]
