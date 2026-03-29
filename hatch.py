@@ -14,6 +14,21 @@ import time
 import xml.etree.ElementTree as ET
 import yaml
 
+# ANSI color codes
+_RESET = "\033[0m"
+_GREEN = "\033[32m"
+_YELLOW = "\033[33m"
+_RED = "\033[31m"
+_BOLD_RED = "\033[1;31m"
+
+
+def clr(text, code):
+    """Wrap text in an ANSI color code if stdout is a TTY."""
+    if sys.stdout.isatty():
+        return f"{code}{text}{_RESET}"
+    return text
+
+
 def remove_duplicates(lst):
     seen = set()
     return [x for x in lst if not (x in seen or seen.add(x))]
@@ -782,46 +797,67 @@ def print_test_results(workspace, build_space, verbose=False, packages=None):
         total_failed += pkg_failed_tests
 
         # Package header line
-        header_status = "FAILED" if pkg_failed else "passed"
         if pkg_tests > 0:
-            parts = [f"{pkg_passed} passed"]
+            parts = [clr(f"{pkg_passed} passed", _GREEN)]
             if pkg_skipped:
-                parts.append(f"{pkg_skipped} skipped")
+                parts.append(clr(f"{pkg_skipped} skipped", _YELLOW))
             if pkg_failed_tests:
-                parts.append(f"{pkg_failed_tests} failed")
-            print(f"{pkg}: {pkg_suites_passed}/{n_suites} suites {header_status}"
-                  f"  ({', '.join(parts)})")
+                parts.append(clr(f"{pkg_failed_tests} failed", _BOLD_RED))
+            print(f"{pkg}: {pkg_suites_passed}/{n_suites} suites passed  ({', '.join(parts)})")
         else:
-            print(f"{pkg}: {pkg_suites_passed}/{n_suites} suites {header_status}")
+            print(f"{pkg}: {pkg_suites_passed}/{n_suites} suites passed")
 
         # Per-suite lines
         name_w = max(len(s[0]) for s in suite_data)
+        label_w = max((len(f" [{s[1]}]") if s[1] else 0) for s in suite_data)
+
+        # Pre-compute counts strings and their visible lengths for time column alignment
+        suite_counts = []
         for name, label, exec_time, xunit, suite_ok in suite_data:
-            tag = "[ ok ]" if suite_ok else "[FAIL]"
+            if xunit:
+                n_total, n_passed, n_skipped, n_failures, n_errors, failed_names, all_cases = xunit
+                plain_parts = []
+                counts = []
+                if n_passed:
+                    plain_parts.append(f"{n_passed} passed")
+                    counts.append(clr(f"{n_passed} passed", _GREEN))
+                if n_skipped:
+                    plain_parts.append(f"{n_skipped} skipped")
+                    counts.append(clr(f"{n_skipped} skipped", _YELLOW))
+                if n_failures:
+                    plain_parts.append(f"{n_failures} failed")
+                    counts.append(clr(f"{n_failures} failed", _BOLD_RED))
+                if n_errors:
+                    plain_parts.append(f"{n_errors} errors")
+                    counts.append(clr(f"{n_errors} errors", _BOLD_RED))
+                counts_str = ", ".join(counts) if counts else "0 tests"
+                counts_vis = len(", ".join(plain_parts)) if plain_parts else len("0 tests")
+            else:
+                counts_str = clr("passed", _GREEN) if suite_ok else clr("FAILED", _BOLD_RED)
+                counts_vis = len("passed" if suite_ok else "FAILED")
+            suite_counts.append((xunit, counts_str, counts_vis))
+
+        counts_w = max(cv for _, _, cv in suite_counts)
+
+        for (name, label, exec_time, xunit, suite_ok), (xunit2, counts_str, counts_vis) in \
+                zip(suite_data, suite_counts):
+            tag = clr("[ ok ]", _GREEN) if suite_ok else clr("[FAIL]", _BOLD_RED)
             label_str = f" [{label}]" if label else ""
             time_str = f"  ({exec_time:.2f}s)" if exec_time is not None else ""
+            padding = " " * (counts_w - counts_vis)
 
             if xunit:
                 n_total, n_passed, n_skipped, n_failures, n_errors, failed_names, all_cases = xunit
-                counts = []
-                if n_passed:
-                    counts.append(f"{n_passed} passed")
-                if n_skipped:
-                    counts.append(f"{n_skipped} skipped")
-                if n_failures:
-                    counts.append(f"{n_failures} failed")
-                if n_errors:
-                    counts.append(f"{n_errors} errors")
-                counts_str = ", ".join(counts) if counts else "0 tests"
-                print(f"  {tag} {name:<{name_w}}{label_str}  {counts_str}{time_str}")
+                print(f"  {tag} {name:<{name_w}}{label_str:<{label_w}}  {counts_str}{padding}{time_str}")
                 if verbose:
                     for tc_name, tc_status, detail in all_cases:
-                        tc_tag = "[ ok ]" if tc_status == 'passed' else \
-                                 "[SKIP]" if tc_status == 'skipped' else "[FAIL]"
+                        tc_tag = clr("[ ok ]", _GREEN) if tc_status == 'passed' else \
+                                 clr("[SKIP]", _YELLOW) if tc_status == 'skipped' else \
+                                 clr("[FAIL]", _BOLD_RED)
                         print(f"       {tc_tag} {tc_name}")
                         if detail and tc_status in ('failed', 'error'):
                             for line in detail.splitlines():
-                                print(f"              {line}")
+                                print(f"              {clr(line, _RED)}")
                 elif failed_names:
                     for tc_name, tc_status, detail in all_cases:
                         if tc_status not in ('failed', 'error'):
@@ -829,25 +865,24 @@ def print_test_results(workspace, build_space, verbose=False, packages=None):
                         print(f"         FAILED: {tc_name}")
                         if detail:
                             for line in detail.splitlines():
-                                print(f"                {line}")
+                                print(f"                {clr(line, _RED)}")
             else:
-                print(f"  {tag} {name:<{name_w}}{label_str}  "
-                      f"{'passed' if suite_ok else 'FAILED'}{time_str}")
+                print(f"  {tag} {name:<{name_w}}{label_str:<{label_w}}  {counts_str}{padding}{time_str}")
 
         print()
 
     print("-" * 70)
     suite_str = f"{total_suites_passed}/{total_suites} suites"
+    summary_status = clr("FAILED", _BOLD_RED) if any_failure else clr("passed", _GREEN)
     if total_tests > 0:
-        test_parts = [f"{total_passed} passed"]
+        test_parts = [clr(f"{total_passed} passed", _GREEN)]
         if total_skipped:
-            test_parts.append(f"{total_skipped} skipped")
+            test_parts.append(clr(f"{total_skipped} skipped", _YELLOW))
         if total_failed:
-            test_parts.append(f"{total_failed} failed")
-        print(f"Summary: {suite_str} | {', '.join(test_parts)} -- "
-              f"{'FAILED' if any_failure else 'passed'}")
+            test_parts.append(clr(f"{total_failed} failed", _BOLD_RED))
+        print(f"Summary: {suite_str} | {', '.join(test_parts)} -- {summary_status}")
     else:
-        print(f"Summary: {suite_str} -- {'FAILED' if any_failure else 'passed'}")
+        print(f"Summary: {suite_str} -- {summary_status}")
     print("-" * 70)
 
     return 1 if any_failure else 0
