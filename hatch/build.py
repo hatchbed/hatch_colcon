@@ -6,6 +6,33 @@ import time
 from .common import get_workspace_dir, get_active_profile, get_package
 
 
+def register(subparsers):
+    parser = subparsers.add_parser("build", help="Builds a colcon workspace.")
+    parser.add_argument("--workspace", "-w", default=".",
+                        help="The path to the colcon workspace (default: \".\")")
+    parser.add_argument("--profile", default="default",
+                        help="The name of a config profile to use (default: 'default')")
+    packages_group = parser.add_argument_group(
+        'Packages', 'Clean workspace subdirectories for the selected profile.')
+    packages_group.add_argument(
+        "pkgs", metavar="PKGNAME", nargs='*', type=str,
+        help='Explicilty specify a list of specific packages to build.')
+    packages_group.add_argument(
+        "--this", action="store_true",
+        help="Build the package containing the current working directory.")
+    packages_group.add_argument(
+        "--no-deps", action="store_true",
+        help="Only build specified packages, not their dependencies.")
+    config_group = parser.add_argument_group('Config', "Parameters for the underlying build system.")
+    config_group.add_argument(
+        "--colcon-build-args", metavar='ARG', dest='colcon_build_args',
+        nargs="+", required=False, type=str, default=None,
+        help="Additional arguments for colcon")
+    config_group.add_argument(
+        "--nice", "-n", type=int, help="CPU niceness for build commands. (default: 0)")
+    parser.set_defaults(func=build_command)
+
+
 def build_command(args):
     workspace = os.path.abspath(args.workspace)
 

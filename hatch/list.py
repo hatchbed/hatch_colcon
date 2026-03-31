@@ -5,6 +5,22 @@ import sys
 from .common import get_workspace_dir, parse_package_name
 
 
+def register(subparsers):
+    parser = subparsers.add_parser(
+        "list", help="Lists colcon packages in the workspace or other arbitrary folders.")
+    list_subparsers = parser.add_subparsers(dest="list_command")
+
+    packages_parser = list_subparsers.add_parser("packages", help="List packages in workspace.")
+    packages_parser.add_argument("--workspace", "-w", default=".",
+                                 help="The path to the colcon workspace (default: \".\")")
+    packages_parser.set_defaults(func=list_packages_command)
+
+    repos_parser = list_subparsers.add_parser("repos", help="List repos in workspace.")
+    repos_parser.add_argument("--workspace", "-w", default=".",
+                              help="The path to the colcon workspace (default: \".\")")
+    repos_parser.set_defaults(func=list_repos_command)
+
+
 _VCS_MARKERS = {
     ".git": "git",
     ".hg":  "hg",

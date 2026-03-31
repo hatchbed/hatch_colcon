@@ -6,6 +6,14 @@ import yaml
 from .common import get_workspace_dir, print_workspace_state
 
 
+def register(subparsers):
+    parser = subparsers.add_parser("init",
+                                   help="Initializes a given folder as a colcon workspace.")
+    parser.add_argument("--workspace", "-w", default=".",
+                        help="The path to the colcon workspace (default: \".\")")
+    parser.set_defaults(func=init_command)
+
+
 def init_command(args):
     workspace = os.path.abspath(args.workspace)
 

@@ -7,6 +7,50 @@ from .common import (get_workspace_dir, get_active_profile, remove_duplicates,
                      print_workspace_state)
 
 
+def register(subparsers):
+    parser = subparsers.add_parser("config", help="Configures a colcon workspace's context.")
+    parser.add_argument("--workspace", "-w", default=".",
+                        help="The path to the colcon workspace (default: \".\")")
+    parser.add_argument("--profile", default="default",
+                        help="The name of a config profile to use (default: 'default')")
+    behavior_group = parser.add_argument_group('Behavior', 'Options affecting argument handling.')
+    behavior_group.add_argument("--append-args", "-a", action="store_true",
+                                help="Append elements to list-type arguments")
+    behavior_group.add_argument("--remove-args", "-r", action="store_true",
+                                help="Remove elements from list-type arguments")
+    context_group = parser.add_argument_group(
+        'Workspace Context', 'Options affecting the context of the workspace.')
+    context_group.add_argument("--extend", "-e",
+                               help="Extend the result-space of another colcon workspace")
+    context_group.add_argument("--no-extend", action="store_true",
+                               help="Unset the explicit extension of another workspace")
+    spaces_group = parser.add_argument_group('Spaces', 'Location of parts of the colcon workspace.')
+    spaces_group.add_argument("--build-space", "--build", "-b", help="Path to the build space")
+    spaces_group.add_argument("--default-build-space", action="store_true",
+                              help="Use the default build space ('build')")
+    spaces_group.add_argument("--install-space", "--install", "-i",
+                              help="Path to the install space")
+    spaces_group.add_argument("--default-install-space", action="store_true",
+                              help="Use the default install space ('install')")
+    spaces_group.add_argument("--test-result-space", "--test", "-t",
+                              help="Path to the test result space")
+    spaces_group.add_argument("--default-test-result-space", action="store_true",
+                              help="Use the default test result space ('test_results')")
+    spaces_group.add_argument("--space-suffix", "-x",
+                              help="Suffix for build, test results, and install space")
+    build_group = parser.add_argument_group(
+        'Build Options', 'Options for configuring the way packages are built.')
+    build_group.add_argument("--no-colcon-build-args", action="store_true",
+                             help="Pass no additional arguments to colcon")
+    build_group.add_argument(
+        "--colcon-build-args", metavar='ARG', dest='colcon_build_args',
+        nargs="+", required=False, type=str, default=None,
+        help="Additional arguments for colcon")
+    build_group.add_argument("--nice", "-n", type=int,
+                             help="CPU niceness for build commands. (default: 0)")
+    parser.set_defaults(func=config_command)
+
+
 def config_command(args):
     workspace = os.path.abspath(args.workspace)
 

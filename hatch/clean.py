@@ -9,6 +9,47 @@ from .common import (get_workspace_dir, get_active_profile, get_package,
                      get_dependent_packages, delete_matching_dirs)
 
 
+def register(subparsers):
+    parser = subparsers.add_parser("clean", help="Deletes various products of the build verb.")
+    parser.add_argument("--workspace", "-w", default=".",
+                        help="The path to the colcon workspace (default: \".\")")
+    parser.add_argument("--profile", default="default",
+                        help="The name of a config profile to use (default: 'default')")
+    parser.add_argument("--yes", "-y", action="store_true",
+                        help="Assume \"yes\" to all interactive checks.")
+    parser.add_argument(
+        "--all-profiles", "-a", action="store_true",
+        help="Apply the specified clean operation for all profiles in this workspace.")
+    parser.add_argument(
+        "--deinit", action="store_true",
+        help="De-initialize the workspace, delete all build profiles and configuration. "
+             "This will also clean subdirectories for all profiles in the workspace.")
+    spaces_group = parser.add_argument_group(
+        'Spaces', 'Clean workspace subdirectories for the selected profile.')
+    spaces_group.add_argument("--build-space", "--build", "-b", action="store_true",
+                              help="Remove the entire build space")
+    spaces_group.add_argument("--install-space", "--install", "-i", action="store_true",
+                              help="Remove the entire install space")
+    spaces_group.add_argument("--test-result-space", "--test", "-t", action="store_true",
+                              help="Remove the entire test result space")
+    spaces_group.add_argument("--log-space", "--logs", "-l", action="store_true",
+                              help="Remove the entire log space")
+    packages_group = parser.add_argument_group(
+        'Packages', 'Clean workspace subdirectories for the selected profile.')
+    packages_group.add_argument(
+        "pkgs", metavar="PKGNAME", nargs='*', type=str,
+        help='Explicilty specify a list of specific packages to clean from the build, '
+             'devel, and install space.')
+    packages_group.add_argument(
+        "--this", action="store_true",
+        help="Clean the package containing the current working directory from the build "
+             "and install space.")
+    packages_group.add_argument(
+        "--dependents", "--dep", action="store_true",
+        help="Clean the packages which depend on the packages to be cleaned.")
+    parser.set_defaults(func=clean_command)
+
+
 def clean_command(args):
     workspace = os.path.abspath(args.workspace)
 

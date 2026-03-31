@@ -157,5 +157,11 @@ complete -F _hatch_colcon hatch
 """
 
 
+def register(subparsers):
+    parser = subparsers.add_parser(
+        "completion", help="Print the bash completion script to stdout.")
+    parser.set_defaults(func=completion_command)
+
+
 def completion_command(args):
     print(_BASH_COMPLETION_SCRIPT, end="")

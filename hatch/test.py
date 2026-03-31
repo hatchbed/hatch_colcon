@@ -11,6 +11,36 @@ from .common import (get_workspace_dir, get_active_profile, get_package,
 import hatch.common as _common
 
 
+def register(subparsers):
+    parser = subparsers.add_parser("test", help="Tests a colcon workspace.")
+    parser.add_argument("--workspace", "-w", default=".",
+                        help="The path to the colcon workspace (default: \".\")")
+    parser.add_argument("--profile", default="default",
+                        help="The name of a config profile to use (default: 'default')")
+    packages_group = parser.add_argument_group('Packages', 'Select packages to test.')
+    packages_group.add_argument(
+        "pkgs", metavar="PKGNAME", nargs='*', type=str,
+        help='Explicitly specify a list of specific packages to test.')
+    packages_group.add_argument(
+        "--this", action="store_true",
+        help="Test the package containing the current working directory.")
+    packages_group.add_argument(
+        "--no-deps", action="store_true",
+        help="Only test specified packages, not their dependencies.")
+    config_group = parser.add_argument_group('Config', "Parameters for the underlying build system.")
+    config_group.add_argument(
+        "--colcon-build-args", metavar='ARG', dest='colcon_build_args',
+        nargs="+", required=False, type=str, default=None,
+        help="Additional arguments for colcon")
+    config_group.add_argument("--verbose", "-v", action="store_true",
+                              help="Show the status of every individual test case.")
+    config_group.add_argument("--results-only", "-r", action="store_true",
+                              help="Show results from the last test run without re-running.")
+    config_group.add_argument("--no-color", action="store_true",
+                              help="Disable colored output.")
+    parser.set_defaults(func=test_command)
+
+
 def get_xunit_path_from_cmdline(cmdline):
     """Extract the xunit result file path from a run_test.py FullCommandLine."""
     try:

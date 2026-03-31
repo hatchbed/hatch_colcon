@@ -27,7 +27,7 @@ dependencies = [
 Homepage = "https://github.com/hatchbed/hatch_colcon"
 
 [project.scripts]
-hatch = "hatch:main"
+hatch = "hatch.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
