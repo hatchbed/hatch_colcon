@@ -71,23 +71,29 @@ _hatch_colcon() {
 
     case "$subcommand" in
         build)
-            COMPREPLY=($(compgen -W "
-                --workspace -w --profile --this --no-deps
-                --colcon-build-args --nice -n --help
-                $(_hatch_colcon_packages "$workspace")
-            " -- "$cur"))
+            if [[ -n "$cur" && "$cur" != -* ]]; then
+                COMPREPLY=($(compgen -W "$(_hatch_colcon_packages "$workspace")" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "
+                    --workspace -w --profile --this --no-deps
+                    --colcon-build-args --nice -n --help
+                " -- "$cur"))
+            fi
             ;;
         clean)
-            COMPREPLY=($(compgen -W "
-                --workspace -w --profile
-                --yes -y --all-profiles -a --deinit
-                --build-space --build -b
-                --install-space --install -i
-                --test-result-space --test -t
-                --log-space --logs -l
-                --this --dependents --dep --help
-                $(_hatch_colcon_packages "$workspace")
-            " -- "$cur"))
+            if [[ -n "$cur" && "$cur" != -* ]]; then
+                COMPREPLY=($(compgen -W "$(_hatch_colcon_packages "$workspace")" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "
+                    --workspace -w --profile
+                    --yes -y --all-profiles -a --deinit
+                    --build-space --build -b
+                    --install-space --install -i
+                    --test-result-space --test -t
+                    --log-space --logs -l
+                    --this --dependents --dep --help
+                " -- "$cur"))
+            fi
             ;;
         completion)
             COMPREPLY=($(compgen -W "--help" -- "$cur"))
@@ -143,12 +149,15 @@ _hatch_colcon() {
             esac
             ;;
         test)
-            COMPREPLY=($(compgen -W "
-                --workspace -w --profile --this --no-deps
-                --colcon-build-args --verbose -v
-                --results-only -r --no-color --help
-                $(_hatch_colcon_packages "$workspace")
-            " -- "$cur"))
+            if [[ -n "$cur" && "$cur" != -* ]]; then
+                COMPREPLY=($(compgen -W "$(_hatch_colcon_packages "$workspace")" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "
+                    --workspace -w --profile --this --no-deps
+                    --colcon-build-args --verbose -v
+                    --results-only -r --no-color --help
+                " -- "$cur"))
+            fi
             ;;
     esac
 }
