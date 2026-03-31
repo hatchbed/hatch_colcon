@@ -29,5 +29,5 @@ Homepage = "https://github.com/hatchbed/hatch_colcon"
 [project.scripts]
 hatch = "hatch:main"
 
-[tool.setuptools]
-py-modules = ["hatch"]
+[tool.setuptools.packages.find]
+where = ["."]
