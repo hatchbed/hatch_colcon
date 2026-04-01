@@ -24,7 +24,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/hatchbed/hatch_colcon"
+Homepage = "https://github.com/hatchbed/hatchy"
 
 [project.scripts]
 hatchy = "hatchy.main:main"

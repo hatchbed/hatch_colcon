@@ -1,5 +1,5 @@
 _BASH_COMPLETION_SCRIPT = """\
-# Bash completion for hatchy (https://github.com/hatchbed/hatch_colcon)
+# Bash completion for hatchy (https://github.com/hatchbed/hatchy)
 
 _hatchy_packages() {
     local ws="${1:-.}"
