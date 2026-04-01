@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from .common import (get_workspace_dir, get_package,
                      clr, _GREEN, _YELLOW, _RED, _BOLD_RED)
 
-import hatch.common as _common
+import hatchy.common as _common
 
 
 def register(subparsers):

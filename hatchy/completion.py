@@ -1,7 +1,7 @@
 _BASH_COMPLETION_SCRIPT = """\
-# Bash completion for hatch_colcon (https://github.com/hatchbed/hatch_colcon)
+# Bash completion for hatchy (https://github.com/hatchbed/hatch_colcon)
 
-_hatch_colcon_packages() {
+_hatchy_packages() {
     local ws="${1:-.}"
     if [[ -d "$ws/src" ]]; then
         find "$ws/src" -name "package.xml" -exec dirname {} \\; 2>/dev/null \\
@@ -9,7 +9,7 @@ _hatch_colcon_packages() {
     fi
 }
 
-_hatch_colcon_get_workspace() {
+_hatchy_get_workspace() {
     local words=("$@")
     local cword="${#words[@]}"
     local ws="."
@@ -23,12 +23,12 @@ _hatch_colcon_get_workspace() {
     echo "$ws"
 }
 
-_hatch_colcon() {
+_hatchy() {
     local cur prev words cword
     _init_completion || return
 
     local workspace
-    workspace="$(_hatch_colcon_get_workspace "${words[@]}")"
+    workspace="$(_hatchy_get_workspace "${words[@]}")"
 
     # Determine subcommand and optional sub-subcommand
     local subcommand="" subsubcommand=""
@@ -59,7 +59,7 @@ _hatch_colcon() {
     case "$subcommand" in
         build)
             if [[ -n "$cur" && "$cur" != -* ]]; then
-                COMPREPLY=($(compgen -W "$(_hatch_colcon_packages "$workspace")" -- "$cur"))
+                COMPREPLY=($(compgen -W "$(_hatchy_packages "$workspace")" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "
                     --workspace -w --this --no-deps
@@ -69,7 +69,7 @@ _hatch_colcon() {
             ;;
         clean)
             if [[ -n "$cur" && "$cur" != -* ]]; then
-                COMPREPLY=($(compgen -W "$(_hatch_colcon_packages "$workspace")" -- "$cur"))
+                COMPREPLY=($(compgen -W "$(_hatchy_packages "$workspace")" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "
                     --workspace -w
@@ -114,7 +114,7 @@ _hatch_colcon() {
             ;;
         test)
             if [[ -n "$cur" && "$cur" != -* ]]; then
-                COMPREPLY=($(compgen -W "$(_hatch_colcon_packages "$workspace")" -- "$cur"))
+                COMPREPLY=($(compgen -W "$(_hatchy_packages "$workspace")" -- "$cur"))
             else
                 COMPREPLY=($(compgen -W "
                     --workspace -w --this --no-deps
@@ -126,7 +126,7 @@ _hatch_colcon() {
     esac
 }
 
-complete -F _hatch_colcon hatch
+complete -F _hatchy hatchy
 """
 
 

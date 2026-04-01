@@ -25,15 +25,15 @@ class CustomArgumentParser(argparse.ArgumentParser):
 
 def main():
     parser = CustomArgumentParser(
-        prog="hatch",
-        description="hatch command",
+        prog="hatchy",
+        description="hatchy command",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--version", action="store_true", help="Prints the hatch version.")
+    parser.add_argument("--version", action="store_true", help="Prints the hatchy version.")
 
     subparsers = parser.add_subparsers(
-        dest="command", title="hatch command",
-        description="Call `hatch VERB -h` for help on each verb listed below:",
+        dest="command", title="hatchy command",
+        description="Call `hatchy VERB -h` for help on each verb listed below:",
         metavar="")
 
     build.register(subparsers)
@@ -56,12 +56,12 @@ def main():
         if arg in ['-h', '--help', '--version']:
             args = parser.parse_args(sysargs)
             if args.version:
-                version = importlib.metadata.version('hatch_colcon')
+                version = importlib.metadata.version('hatchy')
                 year = date.today().year
                 if year > 2025:
                     year = f'2025-{year}'
-                print(f"hatch_colcon {version} (C) {year} Hatchbed LLC")
-                print("hatch_colcon is released under the BSD 3-Clause License "
+                print(f"hatchy {version} (C) {year} Hatchbed LLC")
+                print("hatchy is released under the BSD 3-Clause License "
                       "(https://opensource.org/license/bsd-3-clause)")
                 print('---')
                 print('Using Python {}'.format(''.join(sys.version.split('\n'))))

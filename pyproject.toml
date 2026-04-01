@@ -3,7 +3,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hatch_colcon"
+name = "hatchy"
 version = "0.2.0"
 description = "Command line tools for working with the colcon meta-buildsystem and colcon workspaces."
 readme = "README.md"
@@ -27,7 +27,7 @@ dependencies = [
 Homepage = "https://github.com/hatchbed/hatch_colcon"
 
 [project.scripts]
-hatch = "hatch.main:main"
+hatchy = "hatchy.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
