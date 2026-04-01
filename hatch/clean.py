@@ -5,7 +5,7 @@ import textwrap
 
 import yaml
 
-from .common import (get_workspace_dir, get_active_profile, get_package,
+from .common import (get_workspace_dir, get_package,
                      get_dependent_packages, delete_matching_dirs)
 
 
@@ -13,17 +13,8 @@ def register(subparsers):
     parser = subparsers.add_parser("clean", help="Deletes various products of the build verb.")
     parser.add_argument("--workspace", "-w", default=".",
                         help="The path to the colcon workspace (default: \".\")")
-    parser.add_argument("--profile", default="default",
-                        help="The name of a config profile to use (default: 'default')")
     parser.add_argument("--yes", "-y", action="store_true",
                         help="Assume \"yes\" to all interactive checks.")
-    parser.add_argument(
-        "--all-profiles", "-a", action="store_true",
-        help="Apply the specified clean operation for all profiles in this workspace.")
-    parser.add_argument(
-        "--deinit", action="store_true",
-        help="De-initialize the workspace, delete all build profiles and configuration. "
-             "This will also clean subdirectories for all profiles in the workspace.")
     spaces_group = parser.add_argument_group(
         'Spaces', 'Clean workspace subdirectories for the selected profile.')
     spaces_group.add_argument("--build-space", "--build", "-b", action="store_true",
@@ -62,27 +53,16 @@ def clean_command(args):
         print(f"Error: Parent colcon workspace directory does not exist.")
         sys.exit(1)
 
-    profile = args.profile
-    if profile is None:
-        profile = get_active_profile(workspace)
-        if profile is None:
-            print(f"Workspace '{workspace}' has not been initialized with an active profile.")
-            return
-
-    profile_dir = os.path.join(workspace, ".hatch", "profiles", profile)
-    config_file = os.path.join(profile_dir, "config.yaml")
-
-    if not os.path.exists(config_file):
-        print(f"Error: Profile '{profile}' does not exist.")
-        sys.exit(1)
+    config_file = os.path.join(workspace, ".hatch", "config.yaml")
 
     config_content = {
         "build_space": "build",
         "install_space": "install",
         "test_result_space": "test_results"
     }
-    with open(config_file, "r") as f:
-        config_content.update(yaml.safe_load(f))
+    if os.path.exists(config_file):
+        with open(config_file, "r") as f:
+            config_content.update(yaml.safe_load(f))
 
     build_space = config_content.get("build_space", "build") or "build"
     install_space = config_content.get("install_space", "install") or "install"

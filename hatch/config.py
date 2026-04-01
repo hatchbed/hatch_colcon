@@ -3,16 +3,13 @@ import sys
 
 import yaml
 
-from .common import (get_workspace_dir, get_active_profile, remove_duplicates,
-                     print_workspace_state)
+from .common import (get_workspace_dir, remove_duplicates, print_workspace_state)
 
 
 def register(subparsers):
     parser = subparsers.add_parser("config", help="Configures a colcon workspace's context.")
     parser.add_argument("--workspace", "-w", default=".",
                         help="The path to the colcon workspace (default: \".\")")
-    parser.add_argument("--profile", default="default",
-                        help="The name of a config profile to use (default: 'default')")
     behavior_group = parser.add_argument_group('Behavior', 'Options affecting argument handling.')
     behavior_group.add_argument("--append-args", "-a", action="store_true",
                                 help="Append elements to list-type arguments")
@@ -63,18 +60,10 @@ def config_command(args):
         print(f"Error: Parent colcon workspace directory does not exist.")
         sys.exit(1)
 
-    profile = args.profile
-    if profile is None:
-        profile = get_active_profile(workspace)
-        if profile is None:
-            print(f"Workspace '{workspace}' has not been initialized with an active profile.")
-            return
+    config_file = os.path.join(workspace, ".hatch", "config.yaml")
 
-    profile_dir = os.path.join(workspace, ".hatch", "profiles", profile)
-    config_file = os.path.join(profile_dir, "config.yaml")
-
-    if not os.path.exists(profile_dir):
-        print(f"Error: Profile '{profile}' does not exist.")
+    if not os.path.exists(config_file):
+        print(f"Error: Workspace has not been initialized. Run 'hatch init' first.")
         sys.exit(1)
 
     config_content = {
@@ -86,9 +75,8 @@ def config_command(args):
         "test_result_space": "test_results"
     }
 
-    if os.path.exists(config_file):
-        with open(config_file, "r") as f:
-            config_content = yaml.safe_load(f)
+    with open(config_file, "r") as f:
+        config_content = yaml.safe_load(f)
 
     if args.extend:
         config_content['extend_path'] = args.extend

@@ -34,19 +34,10 @@ def init_command(args):
 
     print(f"Initializing workspace at '{workspace}'...")
 
-    profiles_dir = os.path.join(workspace, ".hatch", "profiles")
-    os.makedirs(profiles_dir, exist_ok=True)
+    hatch_dir = os.path.join(workspace, ".hatch")
+    os.makedirs(hatch_dir, exist_ok=True)
 
-    profiles_file = os.path.join(profiles_dir, "profiles.yaml")
-    if os.path.exists(profiles_file):
-        print(f"Workspace has already been initialized.\n")
-        print_workspace_state(workspace)
-        sys.exit(0)
-
-    default_profile_dir = os.path.join(profiles_dir, "default")
-    os.makedirs(default_profile_dir, exist_ok=True)
-
-    config_file = os.path.join(default_profile_dir, "config.yaml")
+    config_file = os.path.join(hatch_dir, "config.yaml")
     if os.path.exists(config_file):
         print(f"Workspace has already been initialized.\n")
         print_workspace_state(workspace)
@@ -63,9 +54,6 @@ def init_command(args):
 
     with open(config_file, "w") as f:
         yaml.dump(config_content, f, default_flow_style=False)
-
-    with open(profiles_file, "w") as f:
-        yaml.dump({"active": "default"}, f, default_flow_style=False)
 
     print_workspace_state(workspace)
     sys.exit(0)

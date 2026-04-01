@@ -79,23 +79,12 @@ def get_colcon_build_args(verb, args):
     return args, colcon_build_args
 
 
-def get_active_profile(workspace):
-    profiles_file = os.path.join(workspace, ".hatch", "profiles", "profiles.yaml")
-    if os.path.exists(profiles_file):
-        with open(profiles_file, "r") as f:
-            profiles = yaml.safe_load(f)
-            active = profiles.get('active', "")
-            if len(active) > 0:
-                return active
-    return None
-
-
 def get_workspace_dir(current_dir):
     current_dir = os.path.abspath(current_dir)
     while current_dir != os.path.dirname(current_dir):
         src_path = os.path.join(current_dir, 'src')
-        profiles_path = os.path.join(current_dir, '.hatch', 'profiles', 'profiles.yaml')
-        if os.path.isdir(src_path) and os.path.isfile(profiles_path):
+        config_path = os.path.join(current_dir, '.hatch', 'config.yaml')
+        if os.path.isdir(src_path) and os.path.isfile(config_path):
             return current_dir
         current_dir = os.path.dirname(current_dir)
     return None
@@ -127,16 +116,11 @@ def get_package(current_dir):
     return None
 
 
+
 def print_workspace_state(workspace):
     src_dir = os.path.join(workspace, "src")
-    profiles_dir = os.path.join(workspace, ".hatch", "profiles")
+    config_file = os.path.join(workspace, ".hatch", "config.yaml")
 
-    active_profile = get_active_profile(workspace)
-    if active_profile is None:
-        print(f"Workspace '{workspace}'' has not been initialized with an active profile.")
-        return
-
-    config_file = os.path.join(profiles_dir, active_profile, "config.yaml")
     colcon_build_args = []
     extend_path = None
     build_space = "build"
@@ -161,8 +145,10 @@ def print_workspace_state(workspace):
     test_results_dir = os.path.join(workspace, test_result_space)
     env_extend_path = os.environ.get("COLCON_PREFIX_PATH", None)
 
+    def _space_status(path):
+        return f"{' [exists]' if os.path.exists(path) else '[missing]'} {path}"
+
     print("-" * 70)
-    print(f"Profile:                     {active_profile}")
     if extend_path is None:
         if env_extend_path is None:
             print(f"Extending: ")
@@ -172,12 +158,9 @@ def print_workspace_state(workspace):
         print(f"Extending:                   {extend_path}")
     print(f"Workspace:                   {workspace}")
     print("-" * 70)
-    print(f"Build Space:       {' [exists]' if os.path.exists(build_dir) else '[missing]'} "
-          f"{build_dir}")
-    print(f"Install Space:     {' [exists]' if os.path.exists(install_dir) else '[missing]'} "
-          f"{install_dir}")
-    print(f"Test Result Space: {' [exists]' if os.path.exists(test_results_dir) else '[missing]'} "
-          f"{test_results_dir}")
+    print(f"Build Space:       {_space_status(build_dir)}")
+    print(f"Install Space:     {_space_status(install_dir)}")
+    print(f"Test Result Space: {_space_status(test_results_dir)}")
     print(f"Source Space:      {' [exists]' if os.path.exists(src_dir) else '[missing]'} "
           f"{src_dir}")
     print("-" * 70)

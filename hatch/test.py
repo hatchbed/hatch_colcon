@@ -5,7 +5,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-from .common import (get_workspace_dir, get_active_profile, get_package,
+from .common import (get_workspace_dir, get_package,
                      clr, _GREEN, _YELLOW, _RED, _BOLD_RED)
 
 import hatch.common as _common
@@ -15,8 +15,6 @@ def register(subparsers):
     parser = subparsers.add_parser("test", help="Tests a colcon workspace.")
     parser.add_argument("--workspace", "-w", default=".",
                         help="The path to the colcon workspace (default: \".\")")
-    parser.add_argument("--profile", default="default",
-                        help="The name of a config profile to use (default: 'default')")
     packages_group = parser.add_argument_group('Packages', 'Select packages to test.')
     packages_group.add_argument(
         "pkgs", metavar="PKGNAME", nargs='*', type=str,
@@ -314,18 +312,10 @@ def test_command(args):
         print(f"Error: Parent colcon workspace directory does not exist.")
         sys.exit(1)
 
-    profile = args.profile
-    if profile is None:
-        profile = get_active_profile(workspace)
-        if profile is None:
-            print(f"Workspace '{workspace}' has not been initialized with an active profile.")
-            return
-
-    profile_dir = os.path.join(workspace, ".hatch", "profiles", profile)
-    config_file = os.path.join(profile_dir, "config.yaml")
+    config_file = os.path.join(workspace, ".hatch", "config.yaml")
 
     if not os.path.exists(config_file):
-        print(f"Error: Profile '{profile}' does not exist.")
+        print(f"Error: Workspace has not been initialized. Run 'hatch init' first.")
         sys.exit(1)
 
     import yaml

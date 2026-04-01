@@ -4,7 +4,7 @@ import sys
 from datetime import date
 
 from .common import get_colcon_build_args
-from . import build, clean, completion, config, init, list as list_cmd, profile, test
+from . import build, clean, completion, config, init, list as list_cmd, test
 
 
 class CustomArgumentParser(argparse.ArgumentParser):
@@ -42,7 +42,6 @@ def main():
     config.register(subparsers)
     init.register(subparsers)
     list_cmd.register(subparsers)
-    profile.register(subparsers)
     test.register(subparsers)
 
     sysargs = sys.argv[1:]
@@ -72,7 +71,7 @@ def main():
     if verb is None:
         parser.print_help()
         sys.exit("Error: No verb provided.")
-    elif verb not in ['build', 'clean', 'completion', 'config', 'init', 'list', 'profile', 'test']:
+    elif verb not in ['build', 'clean', 'completion', 'config', 'init', 'list', 'test']:
         parser.print_help()
         sys.exit("Error: Unknown verb '{0}' provided.".format(verb))
 
