@@ -112,8 +112,7 @@ def build_command(args):
         shell=True,
         executable="/bin/bash",
         stdout=sys.stdout,
-        stderr=sys.stderr,
-        env={}
+        stderr=sys.stderr
     )
 
     while process.poll() is None:
