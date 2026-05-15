@@ -3,7 +3,7 @@ import subprocess
 import sys
 import time
 
-from .common import get_workspace_dir, get_package
+from .common import get_workspace_dir, get_package, clr, supports_ansi, _DIM
 
 
 def register(subparsers):
@@ -29,6 +29,19 @@ def register(subparsers):
     config_group.add_argument(
         "--nice", "-n", type=int, help="CPU niceness for build commands. (default: 0)")
     parser.set_defaults(func=build_command)
+
+
+def _list_packages(workspace, packages, no_deps):
+    """Return the list of package names colcon will build, or None on failure."""
+    cmd = ["colcon", "list", "-n"]
+    if packages:
+        cmd += ["--packages-select" if no_deps else "--packages-up-to"] + packages
+    try:
+        result = subprocess.run(cmd, cwd=workspace, capture_output=True, text=True)
+        names = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+        return names if names else None
+    except Exception:
+        return None
 
 
 def build_command(args):
@@ -94,6 +107,11 @@ def build_command(args):
         else:
             colcon_cmd += ['--packages-up-to'] + packages
 
+    use_status_display = supports_ansi()
+
+    if use_status_display:
+        colcon_cmd += ['--event-handlers', 'status-', 'parallel_status-']
+
     colcon_shell_cmd = ' '.join(colcon_cmd)
 
     extend_path = config_content.get("extend_path", None)
@@ -104,22 +122,39 @@ def build_command(args):
             sys.exit(1)
         colcon_shell_cmd = f'source {extend_script} && ' + colcon_shell_cmd
 
-    print(f"Running: {colcon_shell_cmd}")
+    print(clr(f"Running: {colcon_shell_cmd}", _DIM))
 
-    process = subprocess.Popen(
-        colcon_shell_cmd,
-        cwd=workspace,
-        shell=True,
-        executable="/bin/bash",
-        stdout=sys.stdout,
-        stderr=sys.stderr
-    )
-
-    while process.poll() is None:
-        subprocess.run(
-            f"renice -n {nice} -p $(pgrep -g $(ps -o pgid= -p {process.pid}))",
+    if use_status_display:
+        from .status_display import run_build_with_status
+        pkg_names = _list_packages(workspace, packages, args.no_deps)
+        total = len(pkg_names) if pkg_names else None
+        env = {**os.environ, 'PYTHONUNBUFFERED': '1', 'VERBOSE': '1'}
+        process = subprocess.Popen(
+            colcon_shell_cmd,
+            cwd=workspace,
             shell=True,
             executable="/bin/bash",
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL)
-        time.sleep(1)
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        returncode = run_build_with_status(process, workspace, nice, total=total, pkg_names=pkg_names)
+        sys.exit(returncode)
+    else:
+        process = subprocess.Popen(
+            colcon_shell_cmd,
+            cwd=workspace,
+            shell=True,
+            executable="/bin/bash",
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+        while process.poll() is None:
+            subprocess.run(
+                f"renice -n {nice} -p $(pgrep -g $(ps -o pgid= -p {process.pid}))",
+                shell=True,
+                executable="/bin/bash",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+            time.sleep(1)
+        sys.exit(process.returncode)
