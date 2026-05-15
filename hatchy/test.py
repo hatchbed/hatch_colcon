@@ -398,7 +398,7 @@ def test_command(args):
 
     test_start = time.monotonic()
     if use_status_display:
-        from .build_status import run_test_with_status
+        from .status_display import run_test_with_status
         env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
         process = subprocess.Popen(
             colcon_shell_cmd,
