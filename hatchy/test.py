@@ -6,9 +6,9 @@ import time
 import xml.etree.ElementTree as ET
 
 from .common import (get_workspace_dir, get_package,
-                     clr, _GREEN, _YELLOW, _RED, _BOLD_RED)
-
-import hatchy.common as _common
+                     clr, supports_ansi, _fmt_duration, _strip_ansi,
+                     _GREEN, _YELLOW, _RED, _BOLD_RED,
+                     _BRIGHT_BLUE, _BRIGHT_MAGENTA, _DIM)
 
 
 def register(subparsers):
@@ -34,8 +34,6 @@ def register(subparsers):
                               help="Show the status of every individual test case.")
     config_group.add_argument("--results-only", "-r", action="store_true",
                               help="Show results from the last test run without re-running.")
-    config_group.add_argument("--no-color", action="store_true",
-                              help="Disable colored output.")
     parser.set_defaults(func=test_command)
 
 
@@ -111,7 +109,7 @@ def get_latest_ctest_xml(pkg_build_dir):
     return xml_path if os.path.isfile(xml_path) else None
 
 
-def print_test_results(workspace, build_space, verbose=False, packages=None):
+def print_test_results(workspace, build_space, verbose=False, packages=None, elapsed=None):
     """Parse CTest XML files and print a nested test result summary.
 
     Returns 0 if all tests passed, 1 if any failed.
@@ -140,8 +138,9 @@ def print_test_results(workspace, build_space, verbose=False, packages=None):
     total_tests = total_passed = total_skipped = total_failed = 0
     any_failure = False
 
+    sep = clr("-" * 70, _BRIGHT_MAGENTA)
     print()
-    print("-" * 70)
+    print(sep)
 
     for pkg in packages:
         ctest_xml = get_latest_ctest_xml(os.path.join(build_dir, pkg))
@@ -223,25 +222,19 @@ def print_test_results(workspace, build_space, verbose=False, packages=None):
         for name, label, exec_time, xunit, suite_ok in suite_data:
             if xunit:
                 n_total, n_passed, n_skipped, n_failures, n_errors, failed_names, all_cases = xunit
-                plain_parts = []
                 counts = []
                 if n_passed:
-                    plain_parts.append(f"{n_passed} passed")
                     counts.append(clr(f"{n_passed} passed", _GREEN))
                 if n_skipped:
-                    plain_parts.append(f"{n_skipped} skipped")
                     counts.append(clr(f"{n_skipped} skipped", _YELLOW))
                 if n_failures:
-                    plain_parts.append(f"{n_failures} failed")
                     counts.append(clr(f"{n_failures} failed", _BOLD_RED))
                 if n_errors:
-                    plain_parts.append(f"{n_errors} errors")
                     counts.append(clr(f"{n_errors} errors", _BOLD_RED))
                 counts_str = ", ".join(counts) if counts else "0 tests"
-                counts_vis = len(", ".join(plain_parts)) if plain_parts else len("0 tests")
             else:
                 counts_str = clr("passed", _GREEN) if suite_ok else clr("FAILED", _BOLD_RED)
-                counts_vis = len("passed" if suite_ok else "FAILED")
+            counts_vis = len(_strip_ansi(counts_str))
             suite_counts.append((xunit, counts_str, counts_vis))
 
         counts_w = max(cv for _, _, cv in suite_counts)
@@ -250,7 +243,7 @@ def print_test_results(workspace, build_space, verbose=False, packages=None):
                 zip(suite_data, suite_counts):
             tag = clr("[ ok ]", _GREEN) if suite_ok else clr("[FAIL]", _BOLD_RED)
             label_str = f" [{label}]" if label else ""
-            time_str = f"  ({exec_time:.2f}s)" if exec_time is not None else ""
+            time_str = f"  ({clr(f'{exec_time:.2f}s', _BRIGHT_BLUE)})" if exec_time is not None else ""
             padding = " " * (counts_w - counts_vis)
 
             if xunit:
@@ -260,7 +253,7 @@ def print_test_results(workspace, build_space, verbose=False, packages=None):
                 if verbose:
                     for tc_name, tc_status, detail in all_cases:
                         tc_tag = clr("[ ok ]", _GREEN) if tc_status == 'passed' else \
-                                 clr("[SKIP]", _YELLOW) if tc_status == 'skipped' else \
+                                 clr("[skip]", _YELLOW) if tc_status == 'skipped' else \
                                  clr("[FAIL]", _BOLD_RED)
                         print(f"       {tc_tag} {tc_name}")
                         if detail and tc_status in ('failed', 'error'):
@@ -280,27 +273,38 @@ def print_test_results(workspace, build_space, verbose=False, packages=None):
 
         print()
 
-    print("-" * 70)
+    print(sep)
     suite_str = f"{total_suites_passed}/{total_suites} suites"
     summary_status = clr("FAILED", _BOLD_RED) if any_failure else clr("passed", _GREEN)
+    elapsed_str = f" ({clr(_fmt_duration(elapsed), _BRIGHT_BLUE)})" if elapsed is not None else ""
     if total_tests > 0:
         test_parts = [clr(f"{total_passed} passed", _GREEN)]
         if total_skipped:
             test_parts.append(clr(f"{total_skipped} skipped", _YELLOW))
         if total_failed:
             test_parts.append(clr(f"{total_failed} failed", _BOLD_RED))
-        print(f"Summary: {suite_str} | {', '.join(test_parts)} -- {summary_status}")
+        print(f"Summary: {suite_str} | {', '.join(test_parts)} -- {summary_status}{elapsed_str}")
     else:
-        print(f"Summary: {suite_str} -- {summary_status}")
-    print("-" * 70)
+        print(f"Summary: {suite_str} -- {summary_status}{elapsed_str}")
+    print(sep)
 
     return 1 if any_failure else 0
 
 
-def test_command(args):
-    if args.no_color:
-        _common._color = False
+def _list_packages(workspace, packages, no_deps):
+    """Return the list of package names colcon will test, or None on failure."""
+    cmd = ["colcon", "list", "-n"]
+    if packages:
+        cmd += ["--packages-select" if no_deps else "--packages-up-to"] + packages
+    try:
+        result = subprocess.run(cmd, cwd=workspace, capture_output=True, text=True)
+        names = [l.strip() for l in result.stdout.splitlines() if l.strip()]
+        return names if names else None
+    except Exception:
+        return None
 
+
+def test_command(args):
     workspace = os.path.abspath(args.workspace)
 
     if not os.path.exists(workspace):
@@ -338,9 +342,12 @@ def test_command(args):
             current_package = get_package(args.workspace)
             if current_package:
                 packages.append(current_package)
+        # Expand to the full dependency set colcon would have tested, so the
+        # summary matches what a prior `hatchy test <pkg>` would have shown.
+        resolved_pkgs = _list_packages(workspace, packages, args.no_deps) if packages else None
         result_code = print_test_results(
             workspace, build_space, verbose=args.verbose,
-            packages=packages if packages else None)
+            packages=resolved_pkgs)
         sys.exit(result_code)
 
     colcon_cmd = ["colcon", "test"]
@@ -366,6 +373,11 @@ def test_command(args):
         else:
             colcon_cmd += ['--packages-up-to'] + packages
 
+    use_status_display = supports_ansi()
+
+    if use_status_display:
+        colcon_cmd += ['--event-handlers', 'status-', 'parallel_status-']
+
     colcon_shell_cmd = ' '.join(colcon_cmd)
 
     extend_path = config_content.get("extend_path", None)
@@ -376,29 +388,50 @@ def test_command(args):
             sys.exit(1)
         colcon_shell_cmd = f'source {extend_script} && ' + colcon_shell_cmd
 
-    print(f"Running: {colcon_shell_cmd}")
+    print(clr(f"Running: {colcon_shell_cmd}", _DIM))
 
-    process = subprocess.Popen(
-        colcon_shell_cmd,
-        cwd=workspace,
-        shell=True,
-        executable="/bin/bash",
-        stdout=sys.stdout,
-        stderr=sys.stderr,
-    )
+    # Resolve the full set of packages colcon will actually test (the explicit
+    # selection plus dependencies, unless --no-deps), so the post-run summary
+    # reflects this run rather than every package with stale test_results.
+    pkg_names = _list_packages(workspace, packages, args.no_deps)
+    total = len(pkg_names) if pkg_names else None
 
-    while process.poll() is None:
-        subprocess.run(
-            f"renice -n {nice} -p $(pgrep -g $(ps -o pgid= -p {process.pid}))",
+    test_start = time.monotonic()
+    if use_status_display:
+        from .build_status import run_test_with_status
+        env = {**os.environ, 'PYTHONUNBUFFERED': '1'}
+        process = subprocess.Popen(
+            colcon_shell_cmd,
+            cwd=workspace,
             shell=True,
             executable="/bin/bash",
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL)
-        time.sleep(1)
-
-    test_returncode = process.returncode
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
+        test_returncode = run_test_with_status(process, workspace, nice, total=total, pkg_names=pkg_names)
+    else:
+        process = subprocess.Popen(
+            colcon_shell_cmd,
+            cwd=workspace,
+            shell=True,
+            executable="/bin/bash",
+            stdout=sys.stdout,
+            stderr=sys.stderr,
+        )
+        while process.poll() is None:
+            subprocess.run(
+                f"renice -n {nice} -p $(pgrep -g $(ps -o pgid= -p {process.pid}))",
+                shell=True,
+                executable="/bin/bash",
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL)
+            time.sleep(1)
+        test_returncode = process.returncode
+    test_elapsed = time.monotonic() - test_start
 
     result_code = print_test_results(
         workspace, build_space, verbose=args.verbose,
-        packages=packages if packages else None)
+        packages=pkg_names,
+        elapsed=test_elapsed)
     sys.exit(max(test_returncode, result_code))

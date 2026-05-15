@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -8,19 +9,55 @@ from pathlib import Path
 
 # ANSI color codes
 _RESET = "\033[0m"
+_DIM = "\033[2m"
+_BOLD = "\033[1m"
+
+# Standard colors
+_RED = "\033[31m"
 _GREEN = "\033[32m"
 _YELLOW = "\033[33m"
-_RED = "\033[31m"
-_BOLD_RED = "\033[1;31m"
+_CYAN = "\033[36m"
 
-_color = True
+# Bold variants
+_BOLD_RED = "\033[1;31m"
+_BOLD_GREEN = "\033[1;32m"
+
+# Bright (high-intensity) variants
+_BRIGHT_BLUE = "\033[94m"
+_BRIGHT_MAGENTA = "\033[95m"
+
+
+# Matches OSC sequences (ESC ] ... BEL or ESC ] ... ST) and CSI/Fe sequences.
+_ANSI_RE = re.compile(
+    r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)'
+    r'|\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])'
+)
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub('', text)
+
+
+def supports_ansi() -> bool:
+    """True when stdout looks like a terminal that can render ANSI escapes."""
+    return sys.stdout.isatty() and os.environ.get('TERM', '') not in ('', 'dumb')
 
 
 def clr(text, code):
-    """Wrap text in an ANSI color code if stdout is a TTY and color is enabled."""
-    if _color and sys.stdout.isatty():
+    """Wrap text in an ANSI color code when stdout supports it."""
+    if supports_ansi():
         return f"{code}{text}{_RESET}"
     return text
+
+
+def _fmt_duration(secs: float) -> str:
+    if secs < 60:
+        return f"{secs:.1f}s"
+    m, s = divmod(secs, 60)
+    if m < 60:
+        return f"{int(m)}min {s:.1f}s"
+    h, m = divmod(int(m), 60)
+    return f"{h}h {int(m)}min {s:.1f}s"
 
 
 def remove_duplicates(lst):
@@ -116,6 +153,9 @@ def get_package(current_dir):
     return None
 
 
+# Width of the status tag column ("[exists] " padded to match "[missing] ").
+_STATUS_TAG_W = len("[missing] ")
+
 
 def print_workspace_state(workspace):
     src_dir = os.path.join(workspace, "src")
@@ -145,30 +185,50 @@ def print_workspace_state(workspace):
     test_results_dir = os.path.join(workspace, test_result_space)
     env_extend_path = os.environ.get("COLCON_PREFIX_PATH", None)
 
-    def _space_status(path):
-        return f"{' [exists]' if os.path.exists(path) else '[missing]'} {path}"
+    sep = clr("-" * 70, _BRIGHT_MAGENTA)
 
-    print("-" * 70)
+    # Status-section keys are padded so their status tags ("[exists]" /
+    # "[missing]") start at the same column; plain-section keys are padded so
+    # their values start at the column where status-section *values* begin.
+    status_keys = ["Build Space:", "Install Space:", "Test Result Space:", "Source Space:"]
+    key_w = max(len(k) for k in status_keys) + 1
+    value_col = key_w + _STATUS_TAG_W
+
+    def _key_pad(label, width):
+        # Pad the plain label to width, then colorize. ANSI codes don't affect
+        # visible width, so we must compute padding before coloring.
+        return clr(label, _CYAN) + ' ' * (width - len(label))
+
+    def _space_status(path, missing_color=_YELLOW):
+        # "[exists]" is 1 char shorter than "[missing]" — pad to the longer
+        # width so paths align at the same column for both states.
+        if os.path.exists(path):
+            label, color = "[exists]", _GREEN
+        else:
+            label, color = "[missing]", missing_color
+        gap = ' ' * (_STATUS_TAG_W - len(label))
+        return f"{clr(label, color)}{gap}{path}"
+
+    print(sep)
     if extend_path is None:
         if env_extend_path is None:
-            print(f"Extending: ")
+            print(_key_pad('Extending:', value_col))
         else:
-            print(f"Extending:             [env] {env_extend_path}")
+            print(f"{_key_pad('Extending:', value_col)}{clr('[env]', _DIM)} {env_extend_path}")
     else:
-        print(f"Extending:                   {extend_path}")
-    print(f"Workspace:                   {workspace}")
-    print("-" * 70)
-    print(f"Build Space:       {_space_status(build_dir)}")
-    print(f"Install Space:     {_space_status(install_dir)}")
-    print(f"Test Result Space: {_space_status(test_results_dir)}")
-    print(f"Source Space:      {' [exists]' if os.path.exists(src_dir) else '[missing]'} "
-          f"{src_dir}")
-    print("-" * 70)
-    print(f"CPU Niceness                 {nice}")
+        print(f"{_key_pad('Extending:', value_col)}{extend_path}")
+    print(f"{_key_pad('Workspace:', value_col)}{workspace}")
+    print(sep)
+    print(f"{_key_pad('Build Space:', key_w)}{_space_status(build_dir)}")
+    print(f"{_key_pad('Install Space:', key_w)}{_space_status(install_dir)}")
+    print(f"{_key_pad('Test Result Space:', key_w)}{_space_status(test_results_dir)}")
+    print(f"{_key_pad('Source Space:', key_w)}{_space_status(src_dir, missing_color=_RED)}")
+    print(sep)
+    print(f"{_key_pad('CPU Niceness:', value_col)}{nice}")
     if not colcon_build_args:
-        print(f"Colcon Build Args:           None")
+        print(f"{_key_pad('Colcon Build Args:', value_col)}None")
     else:
-        print(f"Colcon Build Args:           {colcon_build_args[0]}")
+        print(f"{_key_pad('Colcon Build Args:', value_col)}{colcon_build_args[0]}")
         for arg in colcon_build_args[1:]:
-            print(f"                             {arg}")
-    print("-" * 70)
+            print(f"{' ' * value_col}{arg}")
+    print(sep)

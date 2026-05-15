@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Live per-package status overlay during build and test commands.
+- Syntax highlighting for GCC/Clang diagnostics, CMake errors, and Python tracebacks in colcon stderr blocks.
+
+### Changed
+- Improved formatting for combined status bar overlay.
+- Improved build and test terminal output formatting.
+- Improved formatting for config display.
+
+### Fixed
+- Fixed package selection for test summary.
+
+## [0.2.1] - 2026-04-09
+
+### Fixed
+- Fix not passing current environment to build command.
+
 ## [0.2.0] - 2026-03-29
 
 ### Added
