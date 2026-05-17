@@ -1,5 +1,10 @@
 # Changelog
 
+## [Upcoming]
+
+### Changed
+ - Improved status overlay render during terminal resize.
+
 ## [0.3.0] - 2026-05-15
 
 ### Added
