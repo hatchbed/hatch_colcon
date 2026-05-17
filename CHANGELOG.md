@@ -1,6 +1,6 @@
 # Changelog
 
-## [Upcoming]
+## [0.4.0]
 
 ### Added
  - --build-type argument to config command.
