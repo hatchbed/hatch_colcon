@@ -2,7 +2,7 @@ import os
 import subprocess
 import sys
 
-from .common import get_workspace_dir, parse_package_name
+from .common import get_workspace_dir, parse_package_name, clr, _CYAN, _DIM, _BRIGHT_MAGENTA
 
 
 def register(subparsers):
@@ -91,6 +91,11 @@ def _resolve_workspace(args):
     return workspace, src_dir
 
 
+def _col(label, width):
+    """Colorize label in cyan and pad to width with spaces."""
+    return clr(label, _CYAN) + ' ' * (width - len(label))
+
+
 def list_packages_command(args):
     workspace, src_dir = _resolve_workspace(args)
     packages = find_packages(src_dir)
@@ -98,12 +103,16 @@ def list_packages_command(args):
         print("No packages found.")
         return
 
-    name_width = max(max(len(name) for name, _ in packages), len("name"))
-    path_width = max(max(len(p) for _, p in packages), len("path"))
-    print(f"{'name':<{name_width}}  path")
-    print(f"{'-' * name_width}  {'-' * path_width}")
+    name_w = max(max(len(name) for name, _ in packages), len("name"))
+    path_w = max(max(len(p) for _, p in packages), len("path"))
+    sep = clr("-" * (name_w + 2 + path_w), _BRIGHT_MAGENTA)
+
+    print(sep)
+    print(f"{_col('name', name_w)}  {clr('path', _CYAN)}")
+    print(sep)
     for name, rel_path in packages:
-        print(f"{name:<{name_width}}  {rel_path}")
+        print(f"{name:<{name_w}}  {clr(rel_path, _DIM)}")
+    print(sep)
 
 
 def list_repos_command(args):
@@ -113,15 +122,20 @@ def list_repos_command(args):
         print("No repositories found.")
         return
 
-    path_width = max(max(len(r["path"]) for r in repos), len("path"))
-    type_width = max(max(len(r["type"]) for r in repos), len("type"))
-    url_width = max(max(len(r.get("url", "")) for r in repos), len("url"))
-    version_width = max(max(len(r.get("version", "")) for r in repos), len("version"))
-    print(f"{'path':<{path_width}}  {'type':<{type_width}}  {'url':<{url_width}}  version")
-    print(f"{'-' * path_width}  {'-' * type_width}  {'-' * url_width}  {'-' * version_width}")
+    path_w = max(max(len(r["path"]) for r in repos), len("path"))
+    type_w = max(max(len(r["type"]) for r in repos), len("type"))
+    url_w = max(max(len(r.get("url", "")) for r in repos), len("url"))
+    ver_w = max(max(len(r.get("version", "")) for r in repos), len("version"))
+    sep = clr("-" * (path_w + 2 + type_w + 2 + url_w + 2 + ver_w), _BRIGHT_MAGENTA)
+
+    print(sep)
+    print(f"{_col('path', path_w)}  {_col('type', type_w)}  {_col('url', url_w)}  {clr('version', _CYAN)}")
+    print(sep)
     for repo in repos:
-        path_col = f"{repo['path']:<{path_width}}"
-        type_col = f"{repo['type']:<{type_width}}"
-        url_col = f"{repo.get('url', ''):<{url_width}}"
-        version = repo.get("version", "")
+        path_col = clr(repo['path'], _CYAN) + ' ' * (path_w - len(repo['path']))
+        type_col = f"{repo['type']:<{type_w}}"
+        url = repo.get('url', '')
+        url_col = clr(url, _DIM) + ' ' * (url_w - len(url))
+        version = repo.get('version', '')
         print(f"{path_col}  {type_col}  {url_col}  {version}".rstrip())
+    print(sep)
