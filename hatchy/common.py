@@ -38,6 +38,41 @@ def _strip_ansi(text: str) -> str:
     return _ANSI_RE.sub('', text)
 
 
+def _truncate_ansi(text: str, max_visible: int) -> str:
+    """Truncate ``text`` to at most ``max_visible`` visible characters,
+    preserving (non-printable) ANSI escape sequences.
+
+    Any escape sequences immediately following the truncation point are kept
+    so a trailing reset (``\\x1b[0m``) flushes through.  A defensive reset is
+    appended whenever truncation occurs, in case the cut left an SGR active.
+    """
+    if max_visible <= 0:
+        return ''
+    out = []
+    visible = 0
+    i = 0
+    while i < len(text) and visible < max_visible:
+        if text[i] == '\x1b':
+            m = _ANSI_RE.match(text, i)
+            if m:
+                out.append(text[m.start():m.end()])
+                i = m.end()
+                continue
+        out.append(text[i])
+        visible += 1
+        i += 1
+    truncated = i < len(text)
+    while i < len(text) and text[i] == '\x1b':
+        m = _ANSI_RE.match(text, i)
+        if not m:
+            break
+        out.append(text[m.start():m.end()])
+        i = m.end()
+    if truncated:
+        out.append(_RESET)
+    return ''.join(out)
+
+
 def supports_ansi() -> bool:
     """True when stdout looks like a terminal that can render ANSI escapes."""
     return sys.stdout.isatty() and os.environ.get('TERM', '') not in ('', 'dumb')
