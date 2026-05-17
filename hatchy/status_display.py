@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from .common import (
-    clr, supports_ansi, _strip_ansi, _fmt_duration,
+    clr, supports_ansi, _strip_ansi, _truncate_ansi, _fmt_duration,
     _GREEN, _YELLOW, _RED, _BOLD_RED, _BOLD_GREEN,
     _CYAN, _BRIGHT_BLUE, _BRIGHT_MAGENTA, _DIM, _BOLD,
 )
@@ -42,13 +42,29 @@ _TAIL_READ_BYTES = 32768
 _RENDER_INTERVAL_S = 0.1
 # Minimum interval between renice calls on the colcon process tree.
 _RENICE_INTERVAL_S = 1.0
-# Window after a SIGWINCH during which we re-check overlay position on VTE.
-_VTE_REPOSITION_WINDOW_S = 2.0
+# Idle time after a successful Finished <<< before we flush the buffered
+# [ ok ] line.  The buffer exists so a trailing CTest stderr block can flip
+# [ ok ] to [ FAIL ]; without a timeout, a quiet build would leave the most
+# recent completion invisible until the next colcon event.
+_PENDING_FLUSH_S = 0.25
+# Window after a SIGWINCH during which we render overlay lines with extra
+# right-edge slack so further small width reductions don't wrap the just-
+# rendered lines.  Sized to outlast a typical drag session.
+_RESIZE_DEBOUNCE_S = 0.6
+# Total characters of slack to leave on the right edge of overlay lines in
+# steady state.  Lines are truncated to ``cols - margin`` visible characters.
+_OVERLAY_LINE_MARGIN = 2
+# Wider slack while a resize is in progress; absorbs minor width reductions
+# between this render and the next.
+_RESIZE_LINE_MARGIN = 8
 
-# VTE-based terminals (Tilix, GNOME Terminal) reflow content on resize regardless
-# of DECAWM, causing the overlay to drift above the terminal bottom.  Detect via
-# the env-var that VTE always exports so we know when to apply the CPR fix.
-_IS_VTE = bool(os.environ.get('VTE_VERSION'))
+# DEC mode 2026 — synchronized output.  Bracketing a write sequence with
+# BSU/ESU tells the terminal to buffer the output and present it atomically,
+# so a SIGWINCH-driven reflow can't interleave with our ANSI sequences in
+# mid-render.  Terminals that don't recognise mode 2026 ignore both
+# sequences harmlessly.
+_BSU = '\033[?2026h'  # Begin Synchronized Update
+_ESU = '\033[?2026l'  # End Synchronized Update
 
 _SPIN_FRAMES = ('⠴', '⠦', '⠖', '⠲') \
     if 'utf' in locale.getpreferredencoding(False).lower() \
@@ -273,17 +289,28 @@ class StatusDisplay:
         self._live_lines = 0
         self._live_strs: List[str] = []
         self._live_cols: int = 0
-        # Cached terminal size from the most recent render(), reused by
-        # reposition_to_bottom so a single render cycle only makes one syscall.
+        # Cached terminal size from the most recent render().
         self._cached_size: Optional[os.terminal_size] = None
         self._winch_time: float = 0.0
         self._prev_winch = None
+        # Self-pipe whose read end the main loop selects on instead of using
+        # time.sleep().  The SIGWINCH handler writes to it only when we're
+        # transitioning from steady state into the resize window, so the loop
+        # wakes up immediately for the first redraw with the wider margin and
+        # then resumes the normal _RENDER_INTERVAL_S cadence.
+        self._wakeup_pipe: Optional[Tuple[int, int]] = None
         self._tty = supports_ansi()
         if self._tty:
             try:
+                r, w = os.pipe()
+                os.set_blocking(r, False)
+                os.set_blocking(w, False)
+                self._wakeup_pipe = (r, w)
+            except OSError:
+                self._wakeup_pipe = None
+            try:
                 self._prev_winch = signal.signal(
-                    signal.SIGWINCH,
-                    lambda s, f: setattr(self, '_winch_time', time.monotonic()))
+                    signal.SIGWINCH, self._on_winch)
             except (OSError, ValueError):
                 pass
         self._total = total
@@ -291,12 +318,137 @@ class StatusDisplay:
         self._status_offset = 0
         self._interrupted = False
         self._pending_state: Optional[_PkgState] = None
+        self._pending_state_time: float = 0.0
+        # Set when we enter a resize burst, cleared after the post-settle
+        # CPR-based reposition runs.  Lets us re-anchor the overlay to the
+        # bottom of the terminal once a drag has finished, without paying
+        # CPR overhead on every render.
+        self._needs_settle_reposition = False
+        # Scroll-history lines that arrived during a resize burst.  Writing
+        # to absolute rows while the terminal is reflowing risks landing
+        # at the wrong physical row, and settle_reposition's drift-erase
+        # may wipe whatever we wrote.  _scroll_print stashes lines here
+        # while a SIGWINCH is recent; settle_reposition drains the queue
+        # after it has repositioned the overlay and refreshed _gap_rows.
+        self._pending_scroll_lines: List[str] = []
+        # Sorted-ascending list of 0-indexed terminal rows that are currently
+        # blank between scroll history and the overlay (left there by past
+        # settle repositions).  New scroll-history lines via _scroll_print
+        # pop the topmost row off this list and write there (no scroll) until
+        # the list is empty.  Tracked as explicit rows (rather than a count)
+        # so we still know where the blanks are after N changes (a package
+        # finished) or a second resize adds more blanks at different rows.
+        self._gap_rows: List[int] = []
         self._ctest_error_pkgs: set = set()
         self._spin_idx: int = 0
         self._name_width = (
             min(max((len(n) for n in pkg_names), default=0), _MAX_NAME_WIDTH)
             if pkg_names else 0
         )
+
+    def _on_winch(self, _signum, _frame) -> None:
+        """SIGWINCH handler.  Records the time and, when this SIGWINCH is the
+        entry into a new resize burst (we were outside the debounce window),
+        nudges the wakeup pipe so the main loop renders immediately with the
+        wider resize margin rather than waiting for the next sleep tick.
+        Subsequent SIGWINCHes during the same burst don't wake the loop —
+        the rendered lines are already short, so the normal cadence is fine.
+        """
+        now = time.monotonic()
+        entering_resize = (now - self._winch_time) >= _RESIZE_DEBOUNCE_S
+        self._winch_time = now
+        if entering_resize:
+            # Each fresh burst arms one post-settle reposition.  We do NOT
+            # reset _gap_rows here — any still-unfilled blanks from previous
+            # bursts remain on screen and should still be filled by future
+            # scroll-history lines.  settle_reposition() will add any newly
+            # created blank rows to the existing list.
+            self._needs_settle_reposition = True
+            if self._wakeup_pipe is not None:
+                try:
+                    os.write(self._wakeup_pipe[1], b'\x00')
+                except (BlockingIOError, OSError):
+                    pass
+
+    @property
+    def wakeup_fd(self) -> int:
+        """File descriptor signalled when the main loop should wake early."""
+        return self._wakeup_pipe[0] if self._wakeup_pipe else -1
+
+    def _in_resize_burst(self) -> bool:
+        """True while we're inside the post-SIGWINCH debounce window."""
+        return (time.monotonic() - self._winch_time) < _RESIZE_DEBOUNCE_S
+
+    def needs_settle_reposition(self) -> bool:
+        """True iff a resize burst armed a reposition and has now settled
+        (no SIGWINCH for at least _RESIZE_DEBOUNCE_S).  The main loop should
+        query CPR and call ``settle_reposition`` when this is True."""
+        return (self._needs_settle_reposition
+                and self._tty
+                and self._live_lines > 0
+                and not self._in_resize_burst())
+
+    def settle_reposition(self, cursor_row: Optional[int]) -> None:
+        """Post-resize reposition.  If the overlay drifted up from the
+        bottom row, erase the drifted rows in place and rewrite the overlay
+        at the natural bottom position (``rows-N-1..rows-2``).  This leaves
+        ``drift`` blank rows between scroll history and the overlay; we
+        record those row indices in ``_gap_rows`` so the next scroll-history
+        prints can fill those blanks from the top down instead of triggering
+        scrolls that would just shift the blanks around.
+
+        Always clears the pending flag so a stuck CPR query (returns None)
+        doesn't keep retrying.
+        """
+        self._needs_settle_reposition = False
+        if cursor_row is None:
+            return
+        if not self._tty or self._live_lines == 0 or self._cached_size is None:
+            return
+        rows = self._cached_size.lines
+        n = self._live_lines
+        # The cursor sits on the overlay's last logical row (render writes
+        # n-1 newlines, no trailing newline on the last line), so the overlay
+        # occupies rows ``cursor_row - n + 1`` .. ``cursor_row`` inclusive.
+        # Bottom-anchored target is rows-n .. rows-1.
+        overlay_top = cursor_row - n + 1
+        desired_top = rows - n
+        if overlay_top < 0 or overlay_top >= desired_top:
+            return
+
+        # Erase the n rows the overlay currently sits on, then rewrite the
+        # overlay at the bottom-anchored position with n-1 newlines (no
+        # trailing \n on the last line) so the last row sits at rows-1.
+        buf = [_BSU]
+        for i in range(n):
+            row = overlay_top + 1 + i  # 1-indexed
+            if 1 <= row <= rows:
+                buf.append(f'\033[{row};1H\033[K')
+        buf.append(f'\033[{desired_top + 1};1H')
+        for i, line in enumerate(self._live_strs):
+            if i < len(self._live_strs) - 1:
+                buf.append(f'\033[K{line}\n')
+            else:
+                buf.append(f'\033[K{line}')
+        buf.append(_ESU)
+        sys.stdout.write(''.join(buf))
+        sys.stdout.flush()
+        # Record the new blank rows (the drifted-overlay's old position
+        # that's now empty between scroll history and the bottom-anchored
+        # overlay).  Merge with any pre-existing gap rows so _scroll_print
+        # can fill them in order from the top.
+        new_blanks = list(range(overlay_top, desired_top))
+        self._gap_rows = sorted(set(self._gap_rows) | set(new_blanks))
+
+        # Drain any scroll-history lines that were buffered during the
+        # burst now that the overlay is bottom-anchored and _gap_rows
+        # reflects the fresh drift gaps. Each pending line takes the
+        # normal gap-fill / fallback path inside _scroll_print.
+        if self._pending_scroll_lines:
+            pending = self._pending_scroll_lines
+            self._pending_scroll_lines = []
+            for piece in pending:
+                self._scroll_print(piece)
 
     def process_line(self, raw: str) -> None:
         line = _strip_ansi(raw).rstrip()
@@ -364,6 +516,7 @@ class StatusDisplay:
                     else:
                         # Buffer — a following stderr block may contain CTest errors.
                         self._pending_state = state
+                        self._pending_state_time = time.monotonic()
                 else:
                     self._ctest_error_pkgs.discard(pkg)
                     self._flush_completed(state)
@@ -396,14 +549,12 @@ class StatusDisplay:
 
         # Warning lines from colcon/CMake — color yellow
         if line.startswith('WARNING:'):
-            self._erase_live()
-            print(clr(line, _YELLOW), flush=True)
+            self._scroll_print(clr(line, _YELLOW))
             return
 
         # Unknown lines — pass through for forward compatibility
         if line:
-            self._erase_live()
-            print(line, flush=True)
+            self._scroll_print(line)
 
     def _append_stderr_line(self, line: str) -> None:
         """Append a line to the active stderr block (no-op if no block is open)."""
@@ -431,11 +582,10 @@ class StatusDisplay:
         if state and state.stderr:
             is_error = (state.ok is False) or (state.name in self._ctest_error_pkgs)
             color = _RED if is_error else _YELLOW
-            self._erase_live()
-            print(f"\n{clr(f'--- stderr: {state.name} ---', color)}")
+            self._scroll_print(f"\n{clr(f'--- stderr: {state.name} ---', color)}")
             for ln in highlight_stderr(state.stderr):
-                print(f"  {ln}")
-            print(clr('---', color))
+                self._scroll_print(f"  {ln}")
+            self._scroll_print(clr('---', color))
             state.stderr = []  # clear so finalize() doesn't double-print
 
     def _build_overlay_lines(self, cols: int, spin: str = ' ') -> List[str]:
@@ -490,7 +640,18 @@ class StatusDisplay:
         has_right = (offset + len(kept)) < len(all_parts)
         right_ind = f" {clr('>', _BOLD)}" if has_right else ""
         lines.append(header + " ".join(kept) + right_ind)
-        return lines
+
+        # Hard-cap each line's visible length.  The per-line truncation
+        # heuristics inside this function can leave a line longer than the
+        # available width — for example ``_truncate_desc`` returns the desc
+        # unchanged when ``max_len <= 3`` (no room for an ellipsis), and a
+        # long package-name prefix can already exceed cols on its own.
+        max_visible = max(0, cols - 1)
+        return [
+            line if len(_strip_ansi(line)) <= max_visible
+            else _truncate_ansi(line, max_visible)
+            for line in lines
+        ]
 
     @staticmethod
     def _phys_lines(lines: List[str], cols: int) -> int:
@@ -501,6 +662,15 @@ class StatusDisplay:
         """Redraw the live overlay."""
         if not self._tty:
             return
+
+        # Flush a buffered [ ok ] once it's been idle long enough that no
+        # trailing stderr block is going to arrive.  Without this, the most
+        # recent completion stays invisible in a quiet build until the next
+        # colcon event.
+        if (self._pending_state is not None
+                and time.monotonic() - self._pending_state_time >= _PENDING_FLUSH_S):
+            self._flush_pending()
+
         if not self._building:
             self._erase_live()
             return
@@ -510,59 +680,103 @@ class StatusDisplay:
         # Advance the spinner only when we're actually about to draw a frame,
         # so the animation doesn't skip while the overlay is hidden.
         self._spin_idx = (self._spin_idx + 1) % len(_SPIN_FRAMES)
-        new_lines = self._build_overlay_lines(cols, _SPIN_FRAMES[self._spin_idx])
+        # During the resize window, build lines with extra right-edge slack
+        # so a subsequent small width reduction between this render and the
+        # next won't wrap the just-rendered lines.  ``_build_overlay_lines``
+        # already reserves a 1-char trailing margin internally, so we
+        # subtract the remaining slack from the cols we pass in.
+        margin = _RESIZE_LINE_MARGIN if self._in_resize_burst() else _OVERLAY_LINE_MARGIN
+        line_cols = max(1, cols - (margin - 1))
+        new_lines = self._build_overlay_lines(line_cols, _SPIN_FRAMES[self._spin_idx])
 
-        buf: List[str] = []
+        # Bracket the full redraw in a synchronized-output block so the
+        # terminal applies erase + writes atomically.  Without this, a
+        # SIGWINCH-induced reflow can land between our \033[NA and \033[J or
+        # between successive line writes and shift content under our feet.
+        #
+        # The overlay's bottom logical row is the cursor row (we don't add
+        # a trailing \n after the last line — keeping the status flush with
+        # the terminal's bottom edge instead of leaving a blank cursor row
+        # underneath).  That means cursor sits inside the overlay's last
+        # row (which is fine — the cursor is hidden via \033[?25l), and
+        # the relative erase needs to move up (n_phys - 1) rows to reach
+        # the overlay's top.
+        buf: List[str] = [_BSU]
+        new_n = len(new_lines)
         if self._live_lines > 0:
             # Use min(live_cols, current_cols) so that if the terminal was
             # narrowed since the last render, wrapped lines are counted correctly.
             erase_cols = min(self._live_cols, cols) if self._live_cols else cols
             n_phys = self._phys_lines(self._live_strs, erase_cols)
-            buf.append(f'\033[{n_phys}A\033[J')
+            # \r resets the cursor to column 0 before ESC[J — without it,
+            # the cursor sits at the end-column of the last overlay line we
+            # wrote (we omit the trailing \n to keep the overlay flush with
+            # the bottom row), and ESC[NA preserves the column, so ESC[J
+            # would only erase from that mid-row column rightward and leave
+            # the left half of the top overlay row stale.
+            if n_phys > 1:
+                buf.append(f'\033[{n_phys - 1}A\r\033[J')
+            else:
+                # Cursor already on the only overlay row; just erase from it.
+                buf.append('\r\033[J')
+            # If the overlay shrinks (a package finished), move the cursor
+            # down by the difference. After the erase, cursor sits at the
+            # old overlay's top row; writing new_n < old_n lines from there
+            # would leave the new overlay occupying old_top..old_top+new_n-1
+            # with blank rows below — visually "raising" the status bar.
+            # Shifting cursor down by (old_n - new_n) anchors the new
+            # overlay's bottom row at the same row as the old overlay's.
+            shrink = self._live_lines - new_n
+            if shrink > 0:
+                buf.append(f'\033[{shrink}B')
+                # Those (shrink) rows just above the new overlay are now
+                # blank. Assuming the overlay was bottom-anchored, those
+                # blank rows are at (rows - old_n) .. (rows - new_n - 1).
+                # Track them so the next scroll-history prints fill them
+                # via gap-fill rather than triggering a scroll.
+                if self._cached_size is not None:
+                    rows = self._cached_size.lines
+                    new_blanks = range(
+                        rows - self._live_lines, rows - new_n)
+                    self._gap_rows = sorted(
+                        set(self._gap_rows) | set(new_blanks))
+            elif shrink < 0 and self._gap_rows:
+                # Growth: writing new_n > old_n lines from the old top
+                # overflows the bottom of the screen, so the terminal
+                # scrolls by (-shrink) rows. _gap_rows stores absolute
+                # terminal rows, so any unfilled blanks shifted up by
+                # the scroll amount — adjust references and drop any
+                # that fell off the top or landed inside the new overlay.
+                scroll = -shrink
+                rows_total = (self._cached_size.lines
+                              if self._cached_size is not None else None)
+                new_top = (rows_total - new_n
+                           if rows_total is not None else None)
+                adjusted: List[int] = []
+                for r in self._gap_rows:
+                    r_new = r - scroll
+                    if r_new < 0:
+                        continue
+                    if new_top is not None and r_new >= new_top:
+                        continue
+                    adjusted.append(r_new)
+                self._gap_rows = adjusted
 
-        for line in new_lines:
-            buf.append(f'{line}\n')
+        for i, line in enumerate(new_lines):
+            if i < len(new_lines) - 1:
+                buf.append(f'{line}\n')
+            else:
+                # No trailing \n on the last line: the cursor ends on the
+                # last overlay row so the overlay's bottom row is the
+                # terminal's bottom row.
+                buf.append(line)
 
+        buf.append(_ESU)
         sys.stdout.write(''.join(buf))
         sys.stdout.flush()
         self._live_lines = len(new_lines)
         self._live_strs = new_lines
         self._live_cols = cols
-
-    def reposition_to_bottom(self, cursor_row: int) -> None:
-        """If the overlay drifted above the terminal bottom, snap it back.
-
-        After the trailing-newline render, the cursor lands N rows below the
-        overlay start (cursor_row = overlay_start + N).  The safe target for
-        the overlay start is rows-N-1, which writes N lines ending at rows-2
-        with the cursor at rows-1 — consistent with how a normal render behaves
-        when the terminal is full and the last newline causes a single scroll.
-        """
-        if not self._tty or self._live_lines == 0 or self._cached_size is None:
-            return
-        rows = self._cached_size.lines
-        cols = self._cached_size.columns
-        N = self._live_lines
-        overlay_start = cursor_row - N
-        desired_start = max(0, rows - N - 1)
-        if overlay_start < 0 or overlay_start >= desired_start:
-            return
-
-        new_lines = self._build_overlay_lines(cols, _SPIN_FRAMES[self._spin_idx])
-
-        buf = [
-            f'\033[{overlay_start + 1};1H',  # CUP to current overlay start (1-indexed)
-            '\033[J',                          # erase from here to end of screen
-            f'\033[{desired_start + 1};1H',   # CUP to desired overlay start
-        ]
-        for line in new_lines:
-            buf.append(f'{line}\n')
-
-        sys.stdout.write(''.join(buf))
-        sys.stdout.flush()
-        self._live_strs = new_lines
-        self._live_cols = cols
-        # _live_lines stays N; cursor is now at rows-1 (col 0)
 
     def finalize(self) -> None:
         if self._prev_winch is not None:
@@ -571,6 +785,24 @@ class StatusDisplay:
             except (OSError, ValueError):
                 pass
             self._prev_winch = None
+        # Close the wakeup pipe once the signal handler is restored so no
+        # writes can race with the close.
+        if self._wakeup_pipe is not None:
+            for fd in self._wakeup_pipe:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            self._wakeup_pipe = None
+        # Clear winch_time so any remaining _scroll_print calls during
+        # finalize bypass the resize-burst buffer — no more settle_reposition
+        # will fire, so anything still buffered must print directly.
+        self._winch_time = 0.0
+        if self._pending_scroll_lines:
+            pending = self._pending_scroll_lines
+            self._pending_scroll_lines = []
+            for piece in pending:
+                self._scroll_print(piece)
         # Resolve any unresolved deferred close (input ended right after `---`).
         if self._pending_stderr_close:
             self._pending_stderr_close = False
@@ -648,23 +880,87 @@ class StatusDisplay:
 
     def _flush_completed(self, state: _PkgState) -> None:
         """Print a completed-package line into scroll history."""
-        self._erase_live()
         dur = f"({clr(_fmt_duration((state.end or time.monotonic()) - state.start), _BRIGHT_BLUE)})"
         name = state.name.ljust(self._name_width) if self._name_width else state.name
         if state.ok:
-            print(f"{clr('[ ok ]', _GREEN)} {name} {dur}", flush=True)
+            self._scroll_print(f"{clr('[ ok ]', _GREEN)} {name} {dur}")
         elif state.aborted:
-            print(f"{clr('[ABRT]', _YELLOW)} {name} {dur}", flush=True)
+            self._scroll_print(f"{clr('[ABRT]', _YELLOW)} {name} {dur}")
         else:
-            print(f"{clr('[FAIL]', _BOLD_RED)} {name} {dur}", flush=True)
+            self._scroll_print(f"{clr('[FAIL]', _BOLD_RED)} {name} {dur}")
+
+    def _scroll_print(self, text: str) -> None:
+        """Add ``text`` as a scroll-history line.
+
+        If there are blank rows between the top of the scroll-history region
+        and the overlay (from a recent settle reposition, tracked in
+        ``_gap_rows``), fill the topmost blank in place — no scroll,
+        overlay stays where it is.  Once the gap is exhausted (or wasn't
+        present to begin with) the call falls through to the normal
+        ``_erase_live`` + ``print`` pattern that lets the overlay scroll
+        with the rest of the terminal.
+
+        Multi-line ``text`` (containing embedded ``\\n``) is split into
+        pieces; empty pieces are skipped so they don't waste gap rows.
+        """
+        pieces = text.split('\n') if '\n' in text else [text]
+        for piece in pieces:
+            if not piece:
+                continue
+            # Defer printing during a resize burst: writing absolute rows
+            # while the terminal is reflowing leads to displaced content,
+            # and settle_reposition's drift-erase may wipe whatever we
+            # wrote. settle_reposition drains the queue once the burst
+            # ends and the overlay has been re-anchored.
+            if self._tty and self._in_resize_burst():
+                self._pending_scroll_lines.append(piece)
+                continue
+            if (self._gap_rows
+                    and self._tty
+                    and self._cached_size is not None
+                    and self._live_lines > 0):
+                rows = self._cached_size.lines
+                target_row = self._gap_rows[0]
+                if 0 <= target_row < rows:
+                    # Save the cursor, jump up to the topmost still-blank row
+                    # tracked in _gap_rows, write the line there, then restore
+                    # the cursor.  Writing at an explicit tracked row (rather
+                    # than computing from current N) keeps gap-fill correct
+                    # even when N has changed since the blank was created.
+                    buf = [
+                        _BSU,
+                        '\033[s',           # save cursor
+                        f'\033[{target_row + 1};1H',
+                        '\033[K',
+                        piece,
+                        '\033[u',           # restore cursor
+                        _ESU,
+                    ]
+                    sys.stdout.write(''.join(buf))
+                    sys.stdout.flush()
+                    self._gap_rows.pop(0)
+                    continue
+            # No gap (or not applicable) — standard erase + print flow,
+            # which will let the next render redraw the overlay below.
+            self._erase_live()
+            print(piece, flush=True)
 
     def _erase_live(self) -> None:
         if not self._tty or self._live_lines == 0:
             return
-        cols = min(self._live_cols, shutil.get_terminal_size((80, 24)).columns) \
-            if self._live_cols else shutil.get_terminal_size((80, 24)).columns
+        current_cols = shutil.get_terminal_size((80, 24)).columns
+        cols = min(self._live_cols, current_cols) if self._live_cols else current_cols
         n_phys = self._phys_lines(self._live_strs, cols)
-        sys.stdout.write(f'\033[{n_phys}A\033[J')
+        # Cursor sits inside the overlay's last physical row (we don't trail
+        # a \n on the last line) — go up (n_phys - 1) rows to reach the top.
+        # Wrap in synchronized-output so a concurrent SIGWINCH-induced reflow
+        # can't land between the cursor-up and the erase.
+        # \r resets to col 0 so ESC[J erases the full row, not just the
+        # tail past the cursor (see render() for the rationale).
+        if n_phys > 1:
+            sys.stdout.write(f'{_BSU}\033[{n_phys - 1}A\r\033[J{_ESU}')
+        else:
+            sys.stdout.write(f'{_BSU}\r\033[J{_ESU}')
         sys.stdout.flush()
         self._live_lines = 0
         self._live_strs = []
@@ -786,13 +1082,13 @@ def _run_with_status(process, nice: int, display: StatusDisplay) -> int:
 
                 if not done:
                     display.render()
-                    # On VTE, if a resize recently occurred, query the actual
-                    # cursor position and snap the overlay back to the terminal
-                    # bottom if it drifted upward due to VTE's reflow behavior.
-                    if _IS_VTE and (time.monotonic() - display._winch_time < _VTE_REPOSITION_WINDOW_S):
+                    # One-shot post-resize reposition.  If a resize burst
+                    # just settled, query CPR to see where the overlay
+                    # actually ended up and snap it back to the bottom if
+                    # it drifted up.  Only runs once per burst.
+                    if display.needs_settle_reposition():
                         row = keys.query_cursor_row()
-                        if row is not None:
-                            display.reposition_to_bottom(row)
+                        display.settle_reposition(row)
 
                 now = time.monotonic()
                 if now - last_nice >= _RENICE_INTERVAL_S and nice != 0:
@@ -804,7 +1100,25 @@ def _run_with_status(process, nice: int, display: StatusDisplay) -> int:
                     last_nice = now
 
                 if not done:
-                    time.sleep(_RENDER_INTERVAL_S)
+                    # Sleep on the wakeup pipe instead of time.sleep so a
+                    # resize-mode-entry SIGWINCH can interrupt the wait and
+                    # let the next render fire immediately with the wider
+                    # margin.  Falls back to plain sleep when no pipe is
+                    # available (non-tty / pipe-creation failed).
+                    wakeup_fd = display.wakeup_fd
+                    if wakeup_fd != -1:
+                        try:
+                            ready, _, _ = select.select(
+                                [wakeup_fd], [], [], _RENDER_INTERVAL_S)
+                        except (InterruptedError, OSError):
+                            ready = ()
+                        if ready:
+                            try:
+                                os.read(wakeup_fd, 4096)  # drain
+                            except OSError:
+                                pass
+                    else:
+                        time.sleep(_RENDER_INTERVAL_S)
     except KeyboardInterrupt:
         process.terminate()
         try:
