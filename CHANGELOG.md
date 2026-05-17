@@ -2,6 +2,9 @@
 
 ## [Upcoming]
 
+### Added
+ - --build-type argument to config command.
+
 ### Changed
  - Improved status overlay render during terminal resize.
 
