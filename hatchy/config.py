@@ -1,9 +1,44 @@
 import os
+import re
+import shlex
 import sys
 
 import yaml
 
 from .common import (get_workspace_dir, remove_duplicates, print_workspace_state)
+
+BUILD_TYPES = ['Debug', 'Release', 'RelWithDebInfo', 'MinSizeRel', 'Default']
+
+_CMAKE_BUILD_TYPE_RE = re.compile(r'^-DCMAKE_BUILD_TYPE(:[A-Z_]+)?=', re.IGNORECASE)
+
+
+def set_cmake_build_type(colcon_args, build_type):
+    # Normalize: each stored element may be a space-joined string of tokens
+    tokens = []
+    for arg in colcon_args:
+        tokens.extend(shlex.split(arg))
+
+    filtered = [t for t in tokens if not _CMAKE_BUILD_TYPE_RE.match(t)]
+
+    if build_type != 'Default':
+        new_arg = f'-DCMAKE_BUILD_TYPE={build_type}'
+        if '--cmake-args' in filtered:
+            idx = filtered.index('--cmake-args')
+            filtered.insert(idx + 1, new_arg)
+        else:
+            filtered.extend(['--cmake-args', new_arg])
+    else:
+        # Drop --cmake-args that ended up with no following cmake arguments
+        cleaned = []
+        for i, token in enumerate(filtered):
+            if token == '--cmake-args':
+                next_is_cmake_arg = i + 1 < len(filtered) and not filtered[i + 1].startswith('--')
+                if not next_is_cmake_arg:
+                    continue
+            cleaned.append(token)
+        filtered = cleaned
+
+    return [' '.join(filtered)] if filtered else []
 
 
 def register(subparsers):
@@ -43,6 +78,10 @@ def register(subparsers):
         "--colcon-build-args", metavar='ARG', dest='colcon_build_args',
         nargs="+", required=False, type=str, default=None,
         help="Additional arguments for colcon")
+    build_group.add_argument(
+        "--build-type", choices=BUILD_TYPES, metavar='TYPE',
+        help=f"CMake build type: {', '.join(BUILD_TYPES)}. "
+             "'Default' removes -DCMAKE_BUILD_TYPE from colcon build args.")
     build_group.add_argument("--nice", "-n", type=int,
                              help="CPU niceness for build commands. (default: 0)")
     parser.set_defaults(func=config_command)
@@ -120,6 +159,10 @@ def config_command(args):
 
     if args.no_colcon_build_args:
         config_content['colcon_build_args'] = []
+
+    if args.build_type:
+        colcon_args = config_content.get('colcon_build_args', []) or []
+        config_content['colcon_build_args'] = set_cmake_build_type(colcon_args, args.build_type)
 
     if args.nice:
         config_content['nice'] = args.nice
