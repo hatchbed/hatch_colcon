@@ -10,6 +10,10 @@
  - --compile-commands argument to config command.
  - --build-testing argument to config command.
 
+### Changed
+ - Wrap stderr output from package builds instead of truncating.
+ - Mark packages that had stderr output during build in summary.
+
 ## [0.4.0]
 
 ### Added

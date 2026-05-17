@@ -257,6 +257,7 @@ class _PkgState:
     ok: Optional[bool] = None
     aborted: bool = False
     stderr: List[str] = field(default_factory=list)
+    has_stderr: bool = False
     last_progress: Optional[Tuple[int, str]] = None
 
 
@@ -564,6 +565,7 @@ class StatusDisplay:
             (s for s in self._done if s.name == self._stderr_pkg), None)
         if target is not None:
             target.stderr.append(line)
+            target.has_stderr = True
 
     def _commit_stderr_close(self) -> None:
         """Close the current stderr block and print its highlighted contents."""
@@ -839,7 +841,7 @@ class StatusDisplay:
         total = len(self._done)
         failed_names = [s.name for s in self._done if not s.ok and not s.aborted]
         aborted_names = [s.name for s in self._done if s.aborted]
-        warn_names = [s.name for s in self._done if s.ok and s.stderr]
+        warn_names = [s.name for s in self._done if s.ok and s.has_stderr]
 
         elapsed = f"({clr(_fmt_duration(time.monotonic() - self._build_start), _BRIGHT_BLUE)})"
         print()
@@ -943,7 +945,13 @@ class StatusDisplay:
             # No gap (or not applicable) — standard erase + print flow,
             # which will let the next render redraw the overlay below.
             self._erase_live()
+            if self._tty:
+                sys.stdout.write('\033[?7h')
+                sys.stdout.flush()
             print(piece, flush=True)
+            if self._tty:
+                sys.stdout.write('\033[?7l')
+                sys.stdout.flush()
 
     def _erase_live(self) -> None:
         if not self._tty or self._live_lines == 0:
