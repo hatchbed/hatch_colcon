@@ -1,3 +1,4 @@
+import argparse
 import os
 import re
 import shlex
@@ -8,25 +9,54 @@ import yaml
 from .common import (get_workspace_dir, remove_duplicates, print_workspace_state)
 
 BUILD_TYPES = ['Debug', 'Release', 'RelWithDebInfo', 'MinSizeRel', 'Default']
+CACHES = ['ccache', 'sccache', 'Default']
+BOOL_OPTIONS = ['on', 'off', 'Default']
+GENERATORS = ['ninja', 'make', 'Default']
+_GENERATOR_MAP = {'ninja': 'Ninja', 'make': 'Unix Makefiles'}
+
+_VERSIONED_GCC_RE = re.compile(r'^gcc(-\d+)?$')
+_VERSIONED_CLANG_RE = re.compile(r'^clang(-\d+)?$')
+_LINKER_RE = re.compile(r'^(lld(-\d+)?|gold|mold)$')
 
 _CMAKE_BUILD_TYPE_RE = re.compile(r'^-DCMAKE_BUILD_TYPE(:[A-Z_]+)?=', re.IGNORECASE)
+_CMAKE_COMPILER_RE = re.compile(r'^-DCMAKE_(C|CXX)_COMPILER(:[A-Z_]+)?=', re.IGNORECASE)
+_CMAKE_LINKER_FLAGS_RE = re.compile(r'^-DCMAKE_(EXE|MODULE|SHARED)_LINKER_FLAGS(:[A-Z_]+)?=', re.IGNORECASE)
+_CMAKE_COMPILER_LAUNCHER_RE = re.compile(r'^-DCMAKE_(C|CXX)_COMPILER_LAUNCHER(:[A-Z_]+)?=', re.IGNORECASE)
+_CMAKE_BUILD_TESTING_RE = re.compile(r'^-DBUILD_TESTING(:[A-Z_]+)?=', re.IGNORECASE)
+_CMAKE_EXPORT_COMPILE_COMMANDS_RE = re.compile(r'^-DCMAKE_EXPORT_COMPILE_COMMANDS(:[A-Z_]+)?=', re.IGNORECASE)
 
 
-def set_cmake_build_type(colcon_args, build_type):
-    # Normalize: each stored element may be a space-joined string of tokens
+def _ci_choice(choices):
+    """Return a type converter that accepts any casing and normalizes to the canonical choice."""
+    lookup = {c.lower(): c for c in choices}
+    def convert(value):
+        normalized = lookup.get(value.lower())
+        if normalized is None:
+            raise argparse.ArgumentTypeError(
+                f"invalid choice {value!r} (valid: {', '.join(choices)})")
+        return normalized
+    return convert
+
+
+def _normalize_free(value):
+    """Lowercase the value, mapping any casing of 'default' to canonical 'Default'."""
+    return 'Default' if value.lower() == 'default' else value.lower()
+
+
+def _set_cmake_args(colcon_args, regex, new_values):
     tokens = []
     for arg in colcon_args:
         tokens.extend(shlex.split(arg))
 
-    filtered = [t for t in tokens if not _CMAKE_BUILD_TYPE_RE.match(t)]
+    filtered = [t for t in tokens if not regex.match(t)]
 
-    if build_type != 'Default':
-        new_arg = f'-DCMAKE_BUILD_TYPE={build_type}'
+    if new_values:
         if '--cmake-args' in filtered:
             idx = filtered.index('--cmake-args')
-            filtered.insert(idx + 1, new_arg)
+            for j, val in enumerate(new_values):
+                filtered.insert(idx + 1 + j, val)
         else:
-            filtered.extend(['--cmake-args', new_arg])
+            filtered.extend(['--cmake-args'] + new_values)
     else:
         # Drop --cmake-args that ended up with no following cmake arguments
         cleaned = []
@@ -38,7 +68,102 @@ def set_cmake_build_type(colcon_args, build_type):
             cleaned.append(token)
         filtered = cleaned
 
-    return [' '.join(filtered)] if filtered else []
+    return [' '.join(shlex.quote(t) for t in filtered)] if filtered else []
+
+
+def set_cmake_generator(colcon_args, generator):
+    tokens = []
+    for arg in colcon_args:
+        tokens.extend(shlex.split(arg))
+
+    # Remove existing -G <value> pair
+    filtered = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == '-G':
+            skip_next = True
+            continue
+        filtered.append(token)
+
+    if generator != 'Default':
+        cmake_gen = _GENERATOR_MAP[generator]
+        if '--cmake-args' in filtered:
+            idx = filtered.index('--cmake-args')
+            filtered[idx + 1:idx + 1] = ['-G', cmake_gen]
+        else:
+            filtered.extend(['--cmake-args', '-G', cmake_gen])
+    else:
+        # Drop --cmake-args that ended up with no following cmake arguments
+        cleaned = []
+        for i, token in enumerate(filtered):
+            if token == '--cmake-args':
+                next_is_cmake_arg = i + 1 < len(filtered) and not filtered[i + 1].startswith('--')
+                if not next_is_cmake_arg:
+                    continue
+            cleaned.append(token)
+        filtered = cleaned
+
+    return [' '.join(shlex.quote(t) for t in filtered)] if filtered else []
+
+
+def set_cmake_build_type(colcon_args, build_type):
+    new_values = [] if build_type == 'Default' else [f'-DCMAKE_BUILD_TYPE={build_type}']
+    return _set_cmake_args(colcon_args, _CMAKE_BUILD_TYPE_RE, new_values)
+
+
+def _cxx_from_c_compiler(compiler):
+    m = _VERSIONED_GCC_RE.match(compiler)
+    if m:
+        return f'g++{m.group(1) or ""}'
+    m = _VERSIONED_CLANG_RE.match(compiler)
+    if m:
+        return f'clang++{m.group(1) or ""}'
+    return None
+
+
+def set_cmake_compiler(colcon_args, compiler):
+    new_values = []
+    if compiler != 'Default':
+        cxx = _cxx_from_c_compiler(compiler)
+        if cxx is None:
+            raise ValueError(f"Unrecognized compiler '{compiler}'. Expected: gcc, gcc-<N>, clang, clang-<N>.")
+        new_values = [f'-DCMAKE_C_COMPILER={compiler}', f'-DCMAKE_CXX_COMPILER={cxx}']
+    return _set_cmake_args(colcon_args, _CMAKE_COMPILER_RE, new_values)
+
+
+def set_cmake_linker(colcon_args, linker):
+    new_values = []
+    if linker != 'Default':
+        flag = f'-fuse-ld={linker}'
+        new_values = [
+            f'-DCMAKE_EXE_LINKER_FLAGS={flag}',
+            f'-DCMAKE_MODULE_LINKER_FLAGS={flag}',
+            f'-DCMAKE_SHARED_LINKER_FLAGS={flag}',
+        ]
+    return _set_cmake_args(colcon_args, _CMAKE_LINKER_FLAGS_RE, new_values)
+
+
+def set_cmake_ccache(colcon_args, cache):
+    new_values = []
+    if cache != 'Default':
+        new_values = [
+            f'-DCMAKE_C_COMPILER_LAUNCHER={cache}',
+            f'-DCMAKE_CXX_COMPILER_LAUNCHER={cache}',
+        ]
+    return _set_cmake_args(colcon_args, _CMAKE_COMPILER_LAUNCHER_RE, new_values)
+
+
+def set_cmake_build_testing(colcon_args, value):
+    new_values = [] if value == 'Default' else [f'-DBUILD_TESTING={value.upper()}']
+    return _set_cmake_args(colcon_args, _CMAKE_BUILD_TESTING_RE, new_values)
+
+
+def set_cmake_compile_commands(colcon_args, value):
+    new_values = [] if value == 'Default' else [f'-DCMAKE_EXPORT_COMPILE_COMMANDS={value.upper()}']
+    return _set_cmake_args(colcon_args, _CMAKE_EXPORT_COMPILE_COMMANDS_RE, new_values)
 
 
 def register(subparsers):
@@ -79,9 +204,40 @@ def register(subparsers):
         nargs="+", required=False, type=str, default=None,
         help="Additional arguments for colcon")
     build_group.add_argument(
+        "--generator", choices=GENERATORS, metavar='GENERATOR',
+        type=_ci_choice(GENERATORS),
+        help=f"CMake generator: {', '.join(GENERATORS)}. "
+             "'Default' removes -G from colcon build args.")
+    build_group.add_argument(
         "--build-type", choices=BUILD_TYPES, metavar='TYPE',
+        type=_ci_choice(BUILD_TYPES),
         help=f"CMake build type: {', '.join(BUILD_TYPES)}. "
              "'Default' removes -DCMAKE_BUILD_TYPE from colcon build args.")
+    build_group.add_argument(
+        "--compiler", metavar='COMPILER',
+        type=_normalize_free,
+        help="C/C++ compiler: gcc, gcc-<N>, clang, clang-<N>, Default. "
+             "'Default' removes -DCMAKE_C/CXX_COMPILER from colcon build args.")
+    build_group.add_argument(
+        "--linker", metavar='LINKER',
+        type=_normalize_free,
+        help="Linker: lld, lld-<N>, gold, mold, Default. "
+             "'Default' removes linker flags from colcon build args.")
+    build_group.add_argument(
+        "--ccache", choices=CACHES, metavar='CACHE',
+        type=_ci_choice(CACHES),
+        help=f"Compiler cache: {', '.join(CACHES)}. "
+             "'Default' removes compiler launcher flags from colcon build args.")
+    build_group.add_argument(
+        "--build-testing", choices=BOOL_OPTIONS, metavar='VALUE',
+        type=_ci_choice(BOOL_OPTIONS),
+        help=f"Build test targets (-DBUILD_TESTING): {', '.join(BOOL_OPTIONS)}. "
+             "'Default' removes -DBUILD_TESTING from colcon build args.")
+    build_group.add_argument(
+        "--compile-commands", choices=BOOL_OPTIONS, metavar='VALUE',
+        type=_ci_choice(BOOL_OPTIONS),
+        help=f"Export compile commands (-DCMAKE_EXPORT_COMPILE_COMMANDS): {', '.join(BOOL_OPTIONS)}. "
+             "'Default' removes the flag from colcon build args.")
     build_group.add_argument("--nice", "-n", type=int,
                              help="CPU niceness for build commands. (default: 0)")
     parser.set_defaults(func=config_command)
@@ -160,9 +316,41 @@ def config_command(args):
     if args.no_colcon_build_args:
         config_content['colcon_build_args'] = []
 
+    if args.generator:
+        colcon_args = config_content.get('colcon_build_args', []) or []
+        config_content['colcon_build_args'] = set_cmake_generator(colcon_args, args.generator)
+
     if args.build_type:
         colcon_args = config_content.get('colcon_build_args', []) or []
         config_content['colcon_build_args'] = set_cmake_build_type(colcon_args, args.build_type)
+
+    if args.compiler:
+        if args.compiler != 'Default' and _cxx_from_c_compiler(args.compiler) is None:
+            print(f"Error: unrecognized compiler '{args.compiler}'. "
+                  "Expected: gcc, gcc-<N>, clang, clang-<N>, or Default.")
+            sys.exit(1)
+        colcon_args = config_content.get('colcon_build_args', []) or []
+        config_content['colcon_build_args'] = set_cmake_compiler(colcon_args, args.compiler)
+
+    if args.linker:
+        if args.linker != 'Default' and not _LINKER_RE.match(args.linker):
+            print(f"Error: unrecognized linker '{args.linker}'. "
+                  "Expected: lld, lld-<N>, gold, mold, or Default.")
+            sys.exit(1)
+        colcon_args = config_content.get('colcon_build_args', []) or []
+        config_content['colcon_build_args'] = set_cmake_linker(colcon_args, args.linker)
+
+    if args.ccache:
+        colcon_args = config_content.get('colcon_build_args', []) or []
+        config_content['colcon_build_args'] = set_cmake_ccache(colcon_args, args.ccache)
+
+    if args.build_testing:
+        colcon_args = config_content.get('colcon_build_args', []) or []
+        config_content['colcon_build_args'] = set_cmake_build_testing(colcon_args, args.build_testing)
+
+    if args.compile_commands:
+        colcon_args = config_content.get('colcon_build_args', []) or []
+        config_content['colcon_build_args'] = set_cmake_compile_commands(colcon_args, args.compile_commands)
 
     if args.nice:
         config_content['nice'] = args.nice

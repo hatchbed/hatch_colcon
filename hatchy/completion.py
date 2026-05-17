@@ -90,8 +90,40 @@ _hatchy() {
                 _filedir -d
                 return
             fi
+            if [[ "$prev" == "--generator" ]]; then
+                local generators="make Default"
+                command -v ninja &>/dev/null && generators="ninja $generators"
+                COMPREPLY=($(compgen -W "$generators" -- "$cur"))
+                return
+            fi
             if [[ "$prev" == "--build-type" ]]; then
                 COMPREPLY=($(compgen -W "Debug Release RelWithDebInfo MinSizeRel Default" -- "$cur"))
+                return
+            fi
+            if [[ "$prev" == "--compiler" ]]; then
+                local compilers
+                compilers="$(compgen -c | grep -E '^(gcc|clang)(-[0-9]+)?$' | sort -u | tr '\n' ' ')Default"
+                COMPREPLY=($(compgen -W "$compilers" -- "$cur"))
+                return
+            fi
+            if [[ "$prev" == "--linker" ]]; then
+                local linkers
+                linkers="$(compgen -c | grep -E '^ld\.lld(-[0-9]+)?$' | sed 's/^ld\.//' | sort -u | tr '\n' ' ')"
+                command -v ld.gold &>/dev/null && linkers="${linkers}gold "
+                command -v mold &>/dev/null && linkers="${linkers}mold "
+                linkers="${linkers}Default"
+                COMPREPLY=($(compgen -W "$linkers" -- "$cur"))
+                return
+            fi
+            if [[ "$prev" == "--ccache" ]]; then
+                local caches="Default"
+                command -v ccache &>/dev/null && caches="ccache $caches"
+                command -v sccache &>/dev/null && caches="sccache $caches"
+                COMPREPLY=($(compgen -W "$caches" -- "$cur"))
+                return
+            fi
+            if [[ "$prev" == "--build-testing" || "$prev" == "--compile-commands" ]]; then
+                COMPREPLY=($(compgen -W "on off Default" -- "$cur"))
                 return
             fi
             COMPREPLY=($(compgen -W "
@@ -102,7 +134,8 @@ _hatchy() {
                 --install-space --install -i --default-install-space
                 --test-result-space --test -t --default-test-result-space
                 --space-suffix -x
-                --build-type
+                --generator --build-type --compiler --linker --ccache
+                --build-testing --compile-commands
                 --no-colcon-build-args --colcon-build-args
                 --nice -n --help
             " -- "$cur"))
