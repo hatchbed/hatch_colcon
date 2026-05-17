@@ -90,6 +90,10 @@ _hatchy() {
                 _filedir -d
                 return
             fi
+            if [[ "$prev" == "--build-type" ]]; then
+                COMPREPLY=($(compgen -W "Debug Release RelWithDebInfo MinSizeRel Default" -- "$cur"))
+                return
+            fi
             COMPREPLY=($(compgen -W "
                 --workspace -w
                 --append-args -a --remove-args -r
@@ -98,6 +102,7 @@ _hatchy() {
                 --install-space --install -i --default-install-space
                 --test-result-space --test -t --default-test-result-space
                 --space-suffix -x
+                --build-type
                 --no-colcon-build-args --colcon-build-args
                 --nice -n --help
             " -- "$cur"))
