@@ -1,5 +1,6 @@
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -192,6 +193,77 @@ def get_package(current_dir):
 _STATUS_TAG_W = len("[missing] ")
 
 
+_GENERATOR_DISPLAY = {'Ninja': 'ninja', 'Unix Makefiles': 'make'}
+
+
+def parse_cmake_settings(colcon_build_args):
+    tokens = []
+    for arg in colcon_build_args or []:
+        tokens.extend(shlex.split(arg))
+
+    build_type = None
+    compiler = None
+    linker = None
+    ccache = None
+    build_testing = None
+    compile_commands = None
+    generator = None
+
+    skip = set()
+    for i, token in enumerate(tokens):
+        if i in skip:
+            continue
+
+        if token == '-G' and i + 1 < len(tokens):
+            raw = tokens[i + 1]
+            generator = _GENERATOR_DISPLAY.get(raw, raw)
+            skip.add(i + 1)
+            continue
+
+        m = re.match(r'^-DCMAKE_BUILD_TYPE(?::[A-Z_]+)?=(.+)$', token, re.IGNORECASE)
+        if m:
+            build_type = m.group(1)
+            continue
+
+        # Match C_COMPILER= but NOT C_COMPILER_LAUNCHER= (the _LAUNCHER suffix
+        # prevents the optional (?::[A-Z_]+)? group from consuming it, so '='
+        # fails to match the underscore and the regex correctly rejects it).
+        m = re.match(r'^-DCMAKE_C_COMPILER(?::[A-Z_]+)?=(.+)$', token, re.IGNORECASE)
+        if m:
+            compiler = m.group(1)
+            continue
+
+        m = re.match(r'^-DCMAKE_EXE_LINKER_FLAGS(?::[A-Z_]+)?=-fuse-ld=(.+)$', token, re.IGNORECASE)
+        if m:
+            linker = m.group(1)
+            continue
+
+        m = re.match(r'^-DCMAKE_C_COMPILER_LAUNCHER(?::[A-Z_]+)?=(.+)$', token, re.IGNORECASE)
+        if m:
+            ccache = m.group(1)
+            continue
+
+        m = re.match(r'^-DBUILD_TESTING(?::[A-Z_]+)?=(.+)$', token, re.IGNORECASE)
+        if m:
+            build_testing = m.group(1).lower()
+            continue
+
+        m = re.match(r'^-DCMAKE_EXPORT_COMPILE_COMMANDS(?::[A-Z_]+)?=(.+)$', token, re.IGNORECASE)
+        if m:
+            compile_commands = m.group(1).lower()
+            continue
+
+    return {
+        'generator': generator,
+        'build_type': build_type,
+        'compiler': compiler,
+        'linker': linker,
+        'ccache': ccache,
+        'build_testing': build_testing,
+        'compile_commands': compile_commands,
+    }
+
+
 def print_workspace_state(workspace):
     src_dir = os.path.join(workspace, "src")
     config_file = os.path.join(workspace, ".hatch", "config.yaml")
@@ -258,6 +330,15 @@ def print_workspace_state(workspace):
     print(f"{_key_pad('Install Space:', key_w)}{_space_status(install_dir)}")
     print(f"{_key_pad('Test Result Space:', key_w)}{_space_status(test_results_dir)}")
     print(f"{_key_pad('Source Space:', key_w)}{_space_status(src_dir, missing_color=_RED)}")
+    cmake = parse_cmake_settings(colcon_build_args)
+
+    def _cmake_status(val, default=''):
+        if val is None:
+            tag = '[default]'
+            gap = ' ' * (_STATUS_TAG_W - len(tag))
+            return f"{clr(tag, _DIM)}{gap}{default}"
+        return ' ' * _STATUS_TAG_W + val
+
     print(sep)
     print(f"{_key_pad('CPU Niceness:', value_col)}{nice}")
     if not colcon_build_args:
@@ -266,4 +347,11 @@ def print_workspace_state(workspace):
         print(f"{_key_pad('Colcon Build Args:', value_col)}{colcon_build_args[0]}")
         for arg in colcon_build_args[1:]:
             print(f"{' ' * value_col}{arg}")
+    print(f"{_key_pad('Generator:', key_w)}{_cmake_status(cmake['generator'])}")
+    print(f"{_key_pad('Build Type:', key_w)}{_cmake_status(cmake['build_type'])}")
+    print(f"{_key_pad('Compiler:', key_w)}{_cmake_status(cmake['compiler'])}")
+    print(f"{_key_pad('Linker:', key_w)}{_cmake_status(cmake['linker'])}")
+    print(f"{_key_pad('Compiler Cache:', key_w)}{_cmake_status(cmake['ccache'])}")
+    print(f"{_key_pad('Build Testing:', key_w)}{_cmake_status(cmake['build_testing'], 'on')}")
+    print(f"{_key_pad('Compile Commands:', key_w)}{_cmake_status(cmake['compile_commands'], 'off')}")
     print(sep)

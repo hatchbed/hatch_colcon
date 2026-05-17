@@ -1,5 +1,15 @@
 # Changelog
 
+## [Upcoming]
+
+### Added
+ - --generator argument to config command.
+ - --compiler argument to config command.
+ - --linker argument to config command.
+ - --ccache argument to config command.
+ - --compile-commands argument to config command.
+ - --build-testing argument to config command.
+
 ## [0.4.0]
 
 ### Added
