@@ -1,6 +1,6 @@
 # Changelog
 
-## [Upcoming]
+## [0.5.0]
 
 ### Added
  - --generator argument to config command.
